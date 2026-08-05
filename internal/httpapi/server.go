@@ -62,6 +62,20 @@ type DeleteTasksResponse struct {
 	Deleted []string           `json:"deleted"`
 	Failed  []RetryTaskFailure `json:"failed"`
 }
+type DeleteTasksByGIDRequest struct {
+	GIDs []string `json:"gids"`
+}
+
+type DeleteGIDFailure struct {
+	GID   string `json:"gid"`
+	Error string `json:"error"`
+}
+
+type DeleteTasksByGIDResponse struct {
+	Deleted  []string           `json:"deleted"`
+	NotFound []string           `json:"not_found"`
+	Failed   []DeleteGIDFailure `json:"failed"`
+}
 
 type destinationView struct {
 	ID       string `json:"id"`
@@ -112,6 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/v1/tasks/retry", s.handleRetryTasks)
 	s.mux.HandleFunc("/api/v1/tasks/delete", s.handleDeleteTasks)
+	s.mux.HandleFunc("/api/v1/tasks/delete-by-gid", s.handleDeleteTasksByGID)
 	s.mux.HandleFunc("/api/v1/tasks/", s.handleTaskPath)
 	s.mux.HandleFunc("/api/v1/hooks/aria2/completed", s.handleCompleted)
 	s.mux.HandleFunc("/api/v1/hooks/aria2/stopped", s.handleStopped)
@@ -267,6 +282,48 @@ func (s *Server) handleDeleteTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, response)
 }
+func (s *Server) handleDeleteTasksByGID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var request DeleteTasksByGIDRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(request.GIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one GID is required")
+		return
+	}
+	response := DeleteTasksByGIDResponse{
+		Deleted:  make([]string, 0, len(request.GIDs)),
+		NotFound: make([]string, 0),
+		Failed:   make([]DeleteGIDFailure, 0),
+	}
+	seen := make(map[string]struct{}, len(request.GIDs))
+	for _, rawGID := range request.GIDs {
+		gid := strings.TrimSpace(rawGID)
+		if gid == "" {
+			response.Failed = append(response.Failed, DeleteGIDFailure{Error: "gid is required"})
+			continue
+		}
+		if _, ok := seen[gid]; ok {
+			continue
+		}
+		seen[gid] = struct{}{}
+		if err := s.service.DeleteByGID(r.Context(), gid); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				response.NotFound = append(response.NotFound, gid)
+				continue
+			}
+			response.Failed = append(response.Failed, DeleteGIDFailure{GID: gid, Error: err.Error()})
+			continue
+		}
+		response.Deleted = append(response.Deleted, gid)
+	}
+	writeJSON(w, http.StatusAccepted, response)
+}
 
 func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
@@ -362,7 +419,7 @@ func (s *Server) setCORS(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Token")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 }
 func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))

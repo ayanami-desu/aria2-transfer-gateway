@@ -36,6 +36,10 @@ func (apiFakeDownloader) AddMetalink(context.Context, string, string, bool, map[
 func (apiFakeDownloader) GetFiles(context.Context, string) ([]aria2.DownloadFile, error) {
 	return []aria2.DownloadFile{}, nil
 }
+func (apiFakeDownloader) GetStatus(context.Context, string) (aria2.DownloadStatus, error) {
+	return aria2.DownloadStatus{Status: "complete", CompletedLength: "1", TotalLength: "1"}, nil
+}
+
 func (apiFakeDownloader) GetFollowedBy(context.Context, string) ([]string, error) {
 	return nil, nil
 }
@@ -110,8 +114,8 @@ func TestTaskFilteringAndBatchRetry(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	for _, task := range []domain.Task{
-		{ID: "failed-movie", GID: "gid-failed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "failed-movie"), Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now},
-		{ID: "completed-movie", GID: "gid-completed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "completed-movie"), Status: domain.StatusCompleted, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
+		{ID: "failed-movie", GID: "gid-failed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "failed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now},
+		{ID: "completed-movie", GID: "gid-completed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "completed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusCompleted, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
 	} {
 		if err := taskStore.Create(task); err != nil {
 			t.Fatal(err)
@@ -183,5 +187,66 @@ func TestTaskFilteringAndBatchRetry(t *testing.T) {
 	}
 	if _, err := taskStore.Get("failed-movie"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("deleted task lookup error = %v, want not found", err)
+	}
+}
+func TestDeleteTasksByGID(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	service, err := transfer.NewService(
+		taskStore,
+		apiFakeDownloader{},
+		map[string]provider.Provider{"fake": apiFakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		stagingRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := domain.Task{
+		ID:            "delete-by-gid",
+		GID:           "gid-delete-by-gid",
+		DestinationID: "drive",
+		TargetPath:    "/",
+		StagingPath:   filepath.Join(stagingRoot, "delete-by-gid"),
+		Status:        domain.StatusDownloading,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := taskStore.Create(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(task.StagingPath, "partial.bin"), []byte("partial"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"*"}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/delete-by-gid", strings.NewReader(`{"gids":["gid-delete-by-gid","gid-direct"]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	responseRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(responseRecorder, request)
+	if responseRecorder.Code != http.StatusAccepted {
+		t.Fatalf("delete by GID status = %d, body = %s", responseRecorder.Code, responseRecorder.Body.String())
+	}
+	var response DeleteTasksByGIDResponse
+	if err := json.Unmarshal(responseRecorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Deleted) != 1 || response.Deleted[0] != task.GID || len(response.NotFound) != 1 || response.NotFound[0] != "gid-direct" || len(response.Failed) != 0 {
+		t.Fatalf("delete by GID response = %#v", response)
+	}
+	if _, err := taskStore.Get(task.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted task lookup error = %v, want not found", err)
+	}
+	if _, err := os.Stat(task.StagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staging path still exists: %v", err)
 	}
 }

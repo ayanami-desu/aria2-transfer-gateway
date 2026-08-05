@@ -19,6 +19,11 @@ type DownloadFile struct {
 	CompletedLength string `json:"completedLength"`
 	Selected        bool   `json:"selected"`
 }
+type DownloadStatus struct {
+	Status          string `json:"status"`
+	CompletedLength string `json:"completedLength"`
+	TotalLength     string `json:"totalLength"`
+}
 
 func (f *DownloadFile) UnmarshalJSON(data []byte) error {
 	var raw struct {
@@ -66,6 +71,7 @@ type Downloader interface {
 	AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error)
 	AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error)
 	GetFiles(ctx context.Context, gid string) ([]DownloadFile, error)
+	GetStatus(ctx context.Context, gid string) (DownloadStatus, error)
 	GetFollowedBy(ctx context.Context, gid string) ([]string, error)
 	Remove(ctx context.Context, gid string) error
 }
@@ -120,6 +126,14 @@ func (c *Client) GetFiles(ctx context.Context, gid string) ([]DownloadFile, erro
 	}
 	return files, nil
 }
+func (c *Client) GetStatus(ctx context.Context, gid string) (DownloadStatus, error) {
+	var status DownloadStatus
+	if err := c.call(ctx, "aria2.tellStatus", []any{gid, []string{"status", "completedLength", "totalLength"}}, &status); err != nil {
+		return DownloadStatus{}, err
+	}
+	return status, nil
+}
+
 func (c *Client) GetFollowedBy(ctx context.Context, gid string) ([]string, error) {
 	var status struct {
 		FollowedBy []string `json:"followedBy"`

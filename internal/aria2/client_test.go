@@ -80,6 +80,48 @@ func TestClientGetFiles(t *testing.T) {
 		t.Fatalf("files = %#v", files)
 	}
 }
+func TestClientGetStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Method != "aria2.tellStatus" {
+			t.Errorf("method = %q", request.Method)
+		}
+		if len(request.Params) != 3 {
+			t.Fatalf("params length = %d, want 3", len(request.Params))
+		}
+		var gid string
+		if err := json.Unmarshal(request.Params[1], &gid); err != nil {
+			t.Fatal(err)
+		}
+		if gid != "gid-1" {
+			t.Errorf("gid = %q", gid)
+		}
+		var keys []string
+		if err := json.Unmarshal(request.Params[2], &keys); err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 3 || keys[0] != "status" || keys[1] != "completedLength" || keys[2] != "totalLength" {
+			t.Fatalf("keys = %#v", keys)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"complete","completedLength":"7","totalLength":"7"}}`))
+	}))
+	defer server.Close()
+
+	status, err := NewClient(server.URL, "secret", server.Client()).GetStatus(context.Background(), "gid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "complete" || status.CompletedLength != "7" || status.TotalLength != "7" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestClientGetFollowedBy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

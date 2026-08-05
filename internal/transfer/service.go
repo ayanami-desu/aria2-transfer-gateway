@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aria2-transfer-gateway/internal/aria2"
@@ -38,7 +39,10 @@ const (
 	RetryModeFull   RetryMode = "full"
 )
 
-var errFinalFilesNotReady = errors.New("aria2 final files are not ready")
+var (
+	errFinalFilesNotReady = errors.New("aria2 final files are not ready")
+	errTaskDeleting       = errors.New("task is being deleted")
+)
 
 func sanitizeOptions(options map[string]any) map[string]string {
 	protected := map[string]struct{}{
@@ -82,6 +86,11 @@ func optionValue(value any) (string, bool) {
 	}
 }
 
+type taskRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type Service struct {
 	store                *store.Store
 	downloader           aria2.Downloader
@@ -91,6 +100,8 @@ type Service struct {
 	stagingRoot          string
 	jobs                 chan string
 	workerCount          int
+	taskRunsMu           sync.Mutex
+	taskRuns             map[string]*taskRun
 }
 
 func NewService(taskStore *store.Store, downloader aria2.Downloader, providers map[string]provider.Provider, destinations []domain.Destination, defaultDestinationID string, stagingRoot string, workerCount int) (*Service, error) {
@@ -126,10 +137,15 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 		stagingRoot:          absoluteStagingRoot,
 		jobs:                 make(chan string, workerCount*8),
 		workerCount:          workerCount,
+		taskRuns:             make(map[string]*taskRun),
 	}, nil
 }
 
 func (s *Service) Start(ctx context.Context) {
+	deletingTasks, _ := s.store.ListFiltered(store.TaskFilter{Statuses: []string{domain.StatusDeleting}})
+	for _, task := range deletingTasks {
+		_ = s.deleteTask(ctx, task)
+	}
 	for _, task := range s.store.PendingTransfers() {
 		_ = s.enqueue(task.ID)
 	}
@@ -243,22 +259,31 @@ func (s *Service) HandleCompleted(ctx context.Context, gid, filePath string) err
 	if err != nil {
 		return err
 	}
-	if task.Status == domain.StatusCompleted || task.Status == domain.StatusTransferPending || task.Status == domain.StatusTransferring {
+	if task.Status == domain.StatusDeleting || task.Status == domain.StatusCompleted || task.Status == domain.StatusTransferPending || task.Status == domain.StatusTransferring {
 		return nil
 	}
 	finalFiles, resolvedGID, err := s.resolveFinalFiles(ctx, task, gid)
 	if err != nil {
 		if resolvedGID != "" && resolvedGID != task.GID {
 			if updateErr := s.rememberGID(task.ID, resolvedGID); updateErr != nil {
+				if errors.Is(updateErr, errTaskDeleting) {
+					return nil
+				}
 				return updateErr
 			}
 		}
 		if errors.Is(err, errFinalFilesNotReady) {
 			_, updateErr := s.store.Update(task.ID, func(current *domain.Task) error {
+				if current.Status == domain.StatusDeleting {
+					return errTaskDeleting
+				}
 				current.Status = domain.StatusDownloading
 				current.Error = ""
 				return nil
 			})
+			if errors.Is(updateErr, errTaskDeleting) {
+				return nil
+			}
 			return updateErr
 		}
 		s.markFailed(task.ID, err)
@@ -268,12 +293,18 @@ func (s *Service) HandleCompleted(ctx context.Context, gid, filePath string) err
 		resolvedGID = gid
 	}
 	if _, err := s.store.Update(task.ID, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.GID = resolvedGID
 		current.FinalFiles = finalFiles
 		current.Status = domain.StatusTransferPending
 		current.Error = ""
 		return nil
 	}); err != nil {
+		if errors.Is(err, errTaskDeleting) {
+			return nil
+		}
 		return err
 	}
 	return s.enqueue(task.ID)
@@ -284,6 +315,9 @@ func (s *Service) rememberGID(id, gid string) error {
 		return nil
 	}
 	_, err := s.store.Update(id, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.GID = gid
 		return nil
 	})
@@ -324,12 +358,19 @@ func (s *Service) resolveFinalFiles(ctx context.Context, task domain.Task, gid s
 		}
 		seen[currentGID] = struct{}{}
 		lastGID = currentGID
+		status, err := s.downloader.GetStatus(ctx, currentGID)
+		if err != nil {
+			return nil, currentGID, fmt.Errorf("get aria2 status: %w", err)
+		}
 		files, err := s.downloader.GetFiles(ctx, currentGID)
 		if err != nil {
 			return nil, currentGID, fmt.Errorf("get aria2 files: %w", err)
 		}
 		finalFiles, finalErr := finalFilePaths(task.StagingPath, files)
 		if finalErr == nil && len(finalFiles) > 0 {
+			if !isCompleteDownload(status) {
+				return nil, currentGID, errFinalFilesNotReady
+			}
 			return finalFiles, currentGID, nil
 		}
 		if finalErr != nil && !errors.Is(finalErr, errFinalFilesNotReady) {
@@ -350,6 +391,21 @@ func (s *Service) resolveFinalFiles(ctx context.Context, task domain.Task, gid s
 		}
 	}
 	return nil, lastGID, errFinalFilesNotReady
+}
+
+// aria2.getFiles reports only complete pieces, so selective torrents may show zero
+// per-file progress even when the overall download is complete. The status and
+// aggregate-length checks above prevent preallocated active files from passing.
+func isCompleteDownload(status aria2.DownloadStatus) bool {
+	if status.Status != "complete" {
+		return false
+	}
+	completedLength, err := strconv.ParseInt(status.CompletedLength, 10, 64)
+	if err != nil || completedLength < 0 {
+		return false
+	}
+	totalLength, err := strconv.ParseInt(status.TotalLength, 10, 64)
+	return err == nil && totalLength >= 0 && completedLength == totalLength
 }
 
 func hasFinalFileCandidate(files []aria2.DownloadFile) bool {
@@ -379,10 +435,7 @@ func finalFilePaths(stagingPath string, files []aria2.DownloadFile) ([]string, e
 		if err != nil || length < 0 {
 			return nil, fmt.Errorf("invalid length for aria2 file %q: %q", file.Path, file.Length)
 		}
-		completedLength, err := strconv.ParseInt(file.CompletedLength, 10, 64)
-		if err != nil || completedLength < 0 || completedLength > length {
-			return nil, fmt.Errorf("invalid completed length for aria2 file %q: %q", file.Path, file.CompletedLength)
-		}
+
 		localPath := file.Path
 		if !filepath.IsAbs(localPath) {
 			localPath = filepath.Join(root, localPath)
@@ -463,20 +516,29 @@ func cleanupDownloadMetadata(stagingPath string, finalFiles []string) error {
 
 func (s *Service) HandleStopped(gid, reason string) error {
 	task, err := s.store.FindByGID(strings.TrimSpace(gid))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if task.Status == domain.StatusCompleted {
+	if task.Status == domain.StatusCompleted || task.Status == domain.StatusDeleting {
 		return nil
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "aria2 task stopped"
 	}
 	_, err = s.store.Update(task.ID, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.Status = domain.StatusFailed
 		current.Error = reason
 		return nil
 	})
+	if errors.Is(err, errTaskDeleting) {
+		return nil
+	}
 	return err
 }
 
@@ -507,6 +569,10 @@ func normalizeRetryMode(mode RetryMode) (RetryMode, error) {
 }
 
 func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
+	if len(task.FinalFiles) == 0 {
+		return domain.Task{}, fmt.Errorf("upload retry for task %q: %w", task.ID, errFinalFilesNotReady)
+	}
+
 	stagingPath, err := s.taskStagingPath(task.StagingPath)
 	if err != nil {
 		return domain.Task{}, fmt.Errorf("upload retry for task %q: %w", task.ID, err)
@@ -519,6 +585,9 @@ func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
 		return domain.Task{}, fmt.Errorf("upload retry for task %q: staging path is not a directory", task.ID)
 	}
 	updated, err := s.store.Update(task.ID, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.Status = domain.StatusTransferPending
 		current.Error = ""
 		current.CompletedAt = time.Time{}
@@ -534,7 +603,7 @@ func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
 }
 
 func (s *Service) retryFull(ctx context.Context, task domain.Task) (domain.Task, error) {
-	if err := s.deleteTask(ctx, task); err != nil {
+	if err := s.Delete(ctx, task.ID); err != nil {
 		return domain.Task{}, fmt.Errorf("full retry for task %q: %w", task.ID, err)
 	}
 	options := make(map[string]any, len(task.Options))
@@ -554,24 +623,76 @@ func (s *Service) retryFull(ctx context.Context, task domain.Task) (domain.Task,
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-	task, err := s.store.Get(id)
+	task, err := s.store.Update(id, func(current *domain.Task) error {
+		current.Status = domain.StatusDeleting
+		current.Error = ""
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 	return s.deleteTask(ctx, task)
 }
 
+func (s *Service) DeleteByGID(ctx context.Context, gid string) error {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return errors.New("gid is required")
+	}
+	task, err := s.store.FindByGID(gid)
+	if err != nil {
+		return err
+	}
+	return s.Delete(ctx, task.ID)
+}
+
 func (s *Service) deleteTask(ctx context.Context, task domain.Task) error {
+	s.cancelTaskRun(task.ID)
 	if task.GID != "" {
-		if err := s.downloader.Remove(ctx, task.GID); err != nil && !errors.Is(err, aria2.ErrGIDNotFound) {
+		if err := s.cancelAria2Task(ctx, task.GID); err != nil {
 			return fmt.Errorf("delete task %q: cancel aria2 task: %w", task.ID, err)
 		}
 	}
 	if err := s.removeStagingIfPresent(task.StagingPath); err != nil {
 		return fmt.Errorf("delete task %q: remove staging directory: %w", task.ID, err)
 	}
-	if err := s.store.Delete(task.ID); err != nil {
+	if err := s.store.Delete(task.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("delete task %q: delete record: %w", task.ID, err)
+	}
+	return nil
+}
+
+func (s *Service) cancelAria2Task(ctx context.Context, gid string) error {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return nil
+	}
+	gids := []string{gid}
+	seen := map[string]struct{}{gid: {}}
+	for index := 0; index < len(gids); index++ {
+		followedBy, err := s.downloader.GetFollowedBy(ctx, gids[index])
+		if err != nil {
+			if errors.Is(err, aria2.ErrGIDNotFound) {
+				continue
+			}
+			return fmt.Errorf("find related aria2 task %q: %w", gids[index], err)
+		}
+		for _, followedGID := range followedBy {
+			followedGID = strings.TrimSpace(followedGID)
+			if followedGID == "" {
+				continue
+			}
+			if _, ok := seen[followedGID]; ok {
+				continue
+			}
+			seen[followedGID] = struct{}{}
+			gids = append(gids, followedGID)
+		}
+	}
+	for index := len(gids) - 1; index >= 0; index-- {
+		if err := s.downloader.Remove(ctx, gids[index]); err != nil && !errors.Is(err, aria2.ErrGIDNotFound) {
+			return err
+		}
 	}
 	return nil
 }
@@ -671,29 +792,54 @@ func (s *Service) worker(ctx context.Context) {
 
 func (s *Service) runTransfer(ctx context.Context, id string) {
 	task, err := s.store.Get(id)
-	if err != nil {
+	if err != nil || task.Status == domain.StatusDeleting {
+		return
+	}
+	transferCtx, cancel := context.WithCancel(ctx)
+	run := &taskRun{cancel: cancel, done: make(chan struct{})}
+	if !s.registerTaskRun(id, run) {
+		cancel()
+		return
+	}
+	defer func() {
+		cancel()
+		close(run.done)
+		s.unregisterTaskRun(id)
+	}()
+	task, err = s.store.Get(id)
+	if err != nil || task.Status == domain.StatusDeleting {
 		return
 	}
 	destination, exists := s.destinations[task.DestinationID]
 	if !exists {
-		s.markFailed(id, fmt.Errorf("destination %q not found", task.DestinationID))
+		if !s.shouldStopTransfer(transferCtx, id) {
+			s.markFailed(id, fmt.Errorf("destination %q not found", task.DestinationID))
+		}
 		return
 	}
 	backend, exists := s.providers[destination.Provider]
 	if !exists {
-		s.markFailed(id, fmt.Errorf("provider %q is not configured", destination.Provider))
+		if !s.shouldStopTransfer(transferCtx, id) {
+			s.markFailed(id, fmt.Errorf("provider %q is not configured", destination.Provider))
+		}
 		return
 	}
 	if _, err := s.store.Update(id, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.Status = domain.StatusTransferring
 		current.Error = ""
 		return nil
 	}); err != nil {
 		return
 	}
-	if task.FinalFiles == nil {
-		finalFiles, resolvedGID, err := s.resolveFinalFiles(ctx, task, task.GID)
+	if len(task.FinalFiles) == 0 {
+		finalFiles, resolvedGID, err := s.resolveFinalFiles(transferCtx, task, task.GID)
 		if err != nil {
+			if s.shouldStopTransfer(transferCtx, id) {
+				return
+			}
 			if resolvedGID != "" && resolvedGID != task.GID {
 				if updateErr := s.rememberGID(id, resolvedGID); updateErr != nil {
 					return
@@ -702,6 +848,9 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 			}
 			if errors.Is(err, errFinalFilesNotReady) {
 				_, _ = s.store.Update(id, func(current *domain.Task) error {
+					if current.Status == domain.StatusDeleting {
+						return errTaskDeleting
+					}
 					current.Status = domain.StatusDownloading
 					current.Error = ""
 					return nil
@@ -715,37 +864,57 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 			resolvedGID = task.GID
 		}
 		updated, err := s.store.Update(id, func(current *domain.Task) error {
+			if current.Status == domain.StatusDeleting {
+				return errTaskDeleting
+			}
 			current.GID = resolvedGID
 			current.FinalFiles = finalFiles
 			return nil
 		})
 		if err != nil {
-			s.markFailed(id, err)
 			return
 		}
 		task = updated
 	}
-	if err := cleanupDownloadMetadata(task.StagingPath, task.FinalFiles); err != nil {
-		s.markFailed(id, err)
+	if s.shouldStopTransfer(transferCtx, id) {
 		return
 	}
-	err = backend.Transfer(ctx, provider.TransferRequest{
+	if err := cleanupDownloadMetadata(task.StagingPath, task.FinalFiles); err != nil {
+		if !s.shouldStopTransfer(transferCtx, id) {
+			s.markFailed(id, err)
+		}
+		return
+	}
+	err = backend.Transfer(transferCtx, provider.TransferRequest{
 		SourceDir:   task.StagingPath,
 		TargetPath:  task.TargetPath,
 		Files:       task.FinalFiles,
 		Destination: destination,
 	})
 	if err != nil {
-		s.markFailed(id, err)
+		if !s.shouldStopTransfer(transferCtx, id) {
+			s.markFailed(id, err)
+		}
+		return
+	}
+	if s.shouldStopTransfer(transferCtx, id) {
 		return
 	}
 	if task.Cleanup {
-		if err := os.RemoveAll(task.StagingPath); err != nil {
-			s.markFailed(id, fmt.Errorf("transfer succeeded but cleanup failed: %w", err))
+		if err := s.removeStagingIfPresent(task.StagingPath); err != nil {
+			if !s.shouldStopTransfer(transferCtx, id) {
+				s.markFailed(id, fmt.Errorf("transfer succeeded but cleanup failed: %w", err))
+			}
 			return
 		}
 	}
+	if s.shouldStopTransfer(transferCtx, id) {
+		return
+	}
 	_, _ = s.store.Update(id, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.Status = domain.StatusCompleted
 		current.Error = ""
 		current.CompletedAt = time.Now().UTC()
@@ -755,11 +924,50 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 
 func (s *Service) markFailed(id string, transferErr error) {
 	_, _ = s.store.Update(id, func(current *domain.Task) error {
+		if current.Status == domain.StatusDeleting {
+			return errTaskDeleting
+		}
 		current.Status = domain.StatusFailed
 		current.Error = transferErr.Error()
 		current.RetryCount++
 		return nil
 	})
+}
+
+func (s *Service) registerTaskRun(id string, run *taskRun) bool {
+	s.taskRunsMu.Lock()
+	defer s.taskRunsMu.Unlock()
+	if _, exists := s.taskRuns[id]; exists {
+		return false
+	}
+	s.taskRuns[id] = run
+	return true
+}
+
+func (s *Service) unregisterTaskRun(id string) {
+	s.taskRunsMu.Lock()
+	delete(s.taskRuns, id)
+	s.taskRunsMu.Unlock()
+}
+
+func (s *Service) cancelTaskRun(id string) {
+	s.taskRunsMu.Lock()
+	run := s.taskRuns[id]
+	if run != nil {
+		run.cancel()
+	}
+	s.taskRunsMu.Unlock()
+	if run != nil {
+		<-run.done
+	}
+}
+
+func (s *Service) shouldStopTransfer(ctx context.Context, id string) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	task, err := s.store.Get(id)
+	return err != nil || task.Status == domain.StatusDeleting
 }
 
 func newID() (string, error) {

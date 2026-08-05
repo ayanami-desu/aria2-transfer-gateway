@@ -14,6 +14,7 @@ const (
 	StatusTransferring    = "transferring"
 	StatusCompleted       = "completed"
 	StatusFailed          = "failed"
+	StatusDeleting        = "deleting"
 )
 
 type Destination struct {

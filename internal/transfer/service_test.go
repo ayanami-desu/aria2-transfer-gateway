@@ -18,6 +18,7 @@ import (
 type fakeDownloader struct {
 	getFiles   func(string) []aria2.DownloadFile
 	followedBy func(string) []string
+	status     func(string) aria2.DownloadStatus
 	remove     func(string) error
 }
 
@@ -46,6 +47,13 @@ func (d fakeDownloader) GetFiles(_ context.Context, gid string) ([]aria2.Downloa
 	}
 	return d.getFiles(gid), nil
 }
+func (d fakeDownloader) GetStatus(_ context.Context, gid string) (aria2.DownloadStatus, error) {
+	if d.status == nil {
+		return aria2.DownloadStatus{Status: "complete", CompletedLength: "1", TotalLength: "1"}, nil
+	}
+	return d.status(gid), nil
+}
+
 func (d fakeDownloader) GetFollowedBy(_ context.Context, gid string) ([]string, error) {
 	if d.followedBy == nil {
 		return nil, nil
@@ -54,17 +62,36 @@ func (d fakeDownloader) GetFollowedBy(_ context.Context, gid string) ([]string, 
 }
 
 type fakeProvider struct {
-	mu       sync.Mutex
-	requests []provider.TransferRequest
-	done     chan struct{}
+	mu        sync.Mutex
+	requests  []provider.TransferRequest
+	done      chan struct{}
+	started   chan struct{}
+	release   chan struct{}
+	cancelled chan struct{}
 }
 
-func (p *fakeProvider) Transfer(_ context.Context, request provider.TransferRequest) error {
+func (p *fakeProvider) Transfer(ctx context.Context, request provider.TransferRequest) error {
 	p.mu.Lock()
 	p.requests = append(p.requests, request)
 	p.mu.Unlock()
-	close(p.done)
-	return nil
+	if p.started != nil {
+		close(p.started)
+	}
+	if p.done != nil {
+		close(p.done)
+	}
+	if p.release == nil {
+		return nil
+	}
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		if p.cancelled != nil {
+			close(p.cancelled)
+		}
+		return ctx.Err()
+	}
 }
 
 func TestServiceRetriesAnyTaskStatus(t *testing.T) {
@@ -101,6 +128,7 @@ func TestServiceRetriesAnyTaskStatus(t *testing.T) {
 			DestinationID: "drive",
 			TargetPath:    "/",
 			StagingPath:   filepath.Join(stagingRoot, status),
+			FinalFiles:    []string{"file"},
 			Status:        status,
 			Error:         "previous error",
 			CreatedAt:     now,
@@ -113,6 +141,9 @@ func TestServiceRetriesAnyTaskStatus(t *testing.T) {
 		if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(task.StagingPath, "file"), []byte("payload"), 0o640); err != nil {
+			t.Fatal(err)
+		}
 		updated, err := service.Retry(context.Background(), task.ID, RetryModeUpload)
 		if err != nil {
 			t.Fatalf("retry %s: %v", status, err)
@@ -120,6 +151,53 @@ func TestServiceRetriesAnyTaskStatus(t *testing.T) {
 		if updated.Status != domain.StatusTransferPending || updated.Error != "" || !updated.CompletedAt.IsZero() {
 			t.Fatalf("updated %s task = %#v", status, updated)
 		}
+	}
+}
+
+func TestServiceRejectsUploadRetryWithoutFinalFiles(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		stagingRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := domain.Task{
+		ID:            "retry-without-final-files",
+		DestinationID: "drive",
+		TargetPath:    "/",
+		StagingPath:   filepath.Join(stagingRoot, "downloading"),
+		Status:        domain.StatusDownloading,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := taskStore.Create(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Retry(context.Background(), task.ID, RetryModeUpload); err == nil {
+		t.Fatal("upload retry succeeded without a final file snapshot")
+	}
+	current, err := service.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != domain.StatusDownloading {
+		t.Fatalf("task status = %q, want downloading", current.Status)
 	}
 }
 
@@ -409,7 +487,7 @@ func TestServiceUsesAria2FileWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"movie.mkv", "metadata.torrent", "state.aria2"} {
+	for _, name := range []string{"movie.mkv", "metadata.torrent", "state.aria2", "partial.bin"} {
 		if err := os.WriteFile(filepath.Join(task.StagingPath, name), []byte(name), 0o640); err != nil {
 			t.Fatal(err)
 		}
@@ -419,6 +497,7 @@ func TestServiceUsesAria2FileWhitelist(t *testing.T) {
 			{Path: filepath.Join(task.StagingPath, "movie.mkv"), Length: "9", CompletedLength: "9", Selected: true},
 			{Path: "[METADATA]metadata", Length: "0", CompletedLength: "0", Selected: true},
 			{Path: filepath.Join(task.StagingPath, "state.aria2"), Length: "10", CompletedLength: "0", Selected: false},
+			{Path: filepath.Join(task.StagingPath, "partial.bin"), Length: "10", CompletedLength: "0", Selected: false},
 		}
 	}
 	if err := service.HandleCompleted(ctx, task.GID, ""); err != nil {
@@ -598,7 +677,7 @@ func TestServiceResolvesFollowedTorrentFiles(t *testing.T) {
 		}
 		return []aria2.DownloadFile{
 			{Path: filepath.Join(task.StagingPath, "canceled.bin"), Length: "10", CompletedLength: "0", Selected: false},
-			{Path: filePath, Length: "7", CompletedLength: "5", Selected: true},
+			{Path: filePath, Length: "7", CompletedLength: "7", Selected: true},
 		}
 	}
 	downloader.followedBy = func(gid string) []string {
@@ -616,9 +695,17 @@ func TestServiceResolvesFollowedTorrentFiles(t *testing.T) {
 		t.Fatal("transfer worker did not run")
 	}
 
-	current, err := service.Get(task.ID)
-	if err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(2 * time.Second)
+	var current domain.Task
+	for time.Now().Before(deadline) {
+		current, err = service.Get(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status == domain.StatusCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if current.Status != domain.StatusCompleted || current.GID != "actual-gid" {
 		t.Fatalf("task after completion = %#v", current)
@@ -675,6 +762,108 @@ func TestServiceRejectsIncompleteFinalFile(t *testing.T) {
 		t.Fatalf("task status = %q, want downloading", current.Status)
 	}
 }
+func TestServiceAcceptsCompletedSelectedFileWithZeroFileProgress(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloadRoot := filepath.Join(t.TempDir(), "staging")
+	downloader := &fakeDownloader{}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": &fakeProvider{done: make(chan struct{})}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		downloadRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create(context.Background(), TaskInput{
+		Type:          "torrent",
+		Content:       "torrent-content",
+		DestinationID: "drive",
+		TargetPath:    "/movies",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(task.StagingPath, "selected.mkv")
+	if err := os.WriteFile(filePath, []byte("payload"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: filePath, Length: "7", CompletedLength: "0", Selected: true}}
+	}
+	downloader.status = func(string) aria2.DownloadStatus {
+		return aria2.DownloadStatus{Status: "complete", CompletedLength: "7", TotalLength: "7"}
+	}
+
+	if err := service.HandleCompleted(context.Background(), task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != domain.StatusTransferPending || len(current.FinalFiles) != 1 || current.FinalFiles[0] != "selected.mkv" {
+		t.Fatalf("task after completion = %#v", current)
+	}
+}
+
+func TestServiceRejectsPreallocatedIncompleteFinalFile(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloader := &fakeDownloader{}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": &fakeProvider{done: make(chan struct{})}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		filepath.Join(t.TempDir(), "staging"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create(context.Background(), TaskInput{
+		Type:          "torrent",
+		Content:       "torrent-content",
+		DestinationID: "drive",
+		TargetPath:    "/movies",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(task.StagingPath, "movie.mkv")
+	if err := os.WriteFile(filePath, make([]byte, 10), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: filePath, Length: "10", CompletedLength: "5", Selected: true}}
+	}
+	downloader.status = func(string) aria2.DownloadStatus {
+		return aria2.DownloadStatus{Status: "active", CompletedLength: "5", TotalLength: "10"}
+	}
+
+	if err := service.HandleCompleted(context.Background(), task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != domain.StatusDownloading {
+		t.Fatalf("task status = %q, want downloading", current.Status)
+	}
+}
 func TestServiceUsesDefaultDestination(t *testing.T) {
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {
@@ -709,5 +898,168 @@ func TestServiceUsesDefaultDestination(t *testing.T) {
 	destinations := service.Destinations()
 	if len(destinations) != 2 || destinations[0].ID != "drive" {
 		t.Fatalf("destinations = %#v, want drive first", destinations)
+	}
+}
+func TestServiceDeleteByGIDCancelsAndRemovesTask(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		stagingRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := domain.Task{
+		ID:            "gid-delete-task",
+		GID:           "gid-delete",
+		DestinationID: "drive",
+		TargetPath:    "/",
+		StagingPath:   filepath.Join(stagingRoot, "gid-delete-task"),
+		Status:        domain.StatusDownloading,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := taskStore.Create(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(task.StagingPath, "partial.bin"), []byte("partial"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteByGID(context.Background(), task.GID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskStore.Get(task.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("task lookup error = %v, want not found", err)
+	}
+	if _, err := os.Stat(task.StagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staging path still exists: %v", err)
+	}
+}
+
+func TestServiceDeleteCancelsActiveTransferBeforeCleanup(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	downloader := &fakeDownloader{}
+	backend := &fakeProvider{
+		done:      make(chan struct{}),
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": backend},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		stagingRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	task, err := service.Create(ctx, TaskInput{
+		URLs:          []string{"https://example.test/file"},
+		DestinationID: "drive",
+		TargetPath:    "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(task.StagingPath, "file.bin")
+	if err := os.WriteFile(filePath, []byte("payload"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: filePath, Length: "7", CompletedLength: "7", Selected: true}}
+	}
+	if err := service.HandleCompleted(ctx, task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backend.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer worker did not start")
+	}
+	if err := service.Delete(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backend.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer provider was not cancelled")
+	}
+	if _, err := taskStore.Get(task.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("task lookup error = %v, want not found", err)
+	}
+	if _, err := os.Stat(task.StagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staging path still exists: %v", err)
+	}
+}
+
+func TestServiceRecoversDeletingTaskOnStart(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		stagingRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := domain.Task{
+		ID:            "deleting-on-start",
+		GID:           "gid-deleting-on-start",
+		DestinationID: "drive",
+		TargetPath:    "/",
+		StagingPath:   filepath.Join(stagingRoot, "deleting-on-start"),
+		Status:        domain.StatusDeleting,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := taskStore.Create(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	if _, err := taskStore.Get(task.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("task lookup error = %v, want not found", err)
+	}
+	if _, err := os.Stat(task.StagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staging path still exists: %v", err)
 	}
 }

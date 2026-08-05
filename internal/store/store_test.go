@@ -1,9 +1,6 @@
 package store
 
 import (
-	"bytes"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -110,88 +107,5 @@ func TestStoreFiltersTasks(t *testing.T) {
 	}
 	if len(limited) != 2 {
 		t.Fatalf("limited tasks = %d, want 2", len(limited))
-	}
-}
-
-func TestStoreMigratesLegacyJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tasks.json")
-	task := domain.Task{
-		ID:            "legacy-task",
-		GID:           "legacy-gid",
-		DestinationID: "drive",
-		TargetPath:    "/legacy",
-		StagingPath:   "/tmp/legacy-task",
-		Status:        domain.StatusTransferPending,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
-	}
-	data, err := json.Marshal(fileState{Tasks: []domain.Task{task}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	taskStore, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer taskStore.Close()
-	got, err := taskStore.Get(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GID != task.GID || got.Status != task.Status {
-		t.Fatalf("migrated task = %#v", got)
-	}
-	if _, err := os.Stat(path + ".legacy"); err != nil {
-		t.Fatalf("legacy backup missing: %v", err)
-	}
-	database, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.HasPrefix(database, []byte("SQLite format 3\x00")) {
-		t.Fatalf("migrated file is not SQLite")
-	}
-}
-
-func TestStoreImportsSiblingLegacyJSON(t *testing.T) {
-	dir := t.TempDir()
-	databasePath := filepath.Join(dir, "tasks.db")
-	legacyPath := filepath.Join(dir, "tasks.json")
-	task := domain.Task{
-		ID:            "sibling-task",
-		DestinationID: "drive",
-		TargetPath:    "/sibling",
-		StagingPath:   "/tmp/sibling-task",
-		Status:        domain.StatusFailed,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
-	}
-	data, err := json.Marshal(fileState{Tasks: []domain.Task{task}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	taskStore, err := Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer taskStore.Close()
-	got, err := taskStore.Get(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != task.ID || got.Status != task.Status {
-		t.Fatalf("imported task = %#v", got)
-	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		t.Fatalf("legacy JSON was not preserved: %v", err)
 	}
 }

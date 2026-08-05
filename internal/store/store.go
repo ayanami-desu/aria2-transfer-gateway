@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,10 +17,6 @@ import (
 
 var ErrNotFound = errors.New("task not found")
 var ErrAlreadyExists = errors.New("task already exists")
-
-type fileState struct {
-	Tasks []domain.Task `json:"tasks"`
-}
 
 type TaskFilter struct {
 	Statuses      []string
@@ -48,26 +43,8 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
-	legacyTasks, legacyPath, err := discoverLegacy(path)
-	if err != nil {
-		return nil, err
-	}
-	legacyBackup := ""
-	if legacyPath == path {
-		legacyBackup = path + ".legacy"
-		if _, err := os.Stat(legacyBackup); err == nil {
-			return nil, fmt.Errorf("legacy task backup already exists: %s", legacyBackup)
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("check legacy task backup: %w", err)
-		}
-		if err := os.Rename(path, legacyBackup); err != nil {
-			return nil, fmt.Errorf("backup legacy task store: %w", err)
-		}
-	}
-
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		restoreLegacy(path, legacyBackup)
 		return nil, fmt.Errorf("open SQLite task store: %w", err)
 	}
 	db.SetMaxOpenConns(1)
@@ -75,20 +52,11 @@ func Open(path string) (*Store, error) {
 	s := &Store{path: path, db: db}
 	if err := s.initialize(); err != nil {
 		_ = db.Close()
-		restoreLegacy(path, legacyBackup)
 		return nil, err
-	}
-	if legacyPath != "" {
-		if err := s.insertTasks(legacyTasks); err != nil {
-			_ = db.Close()
-			restoreLegacy(path, legacyBackup)
-			return nil, fmt.Errorf("migrate legacy task store: %w", err)
-		}
 	}
 	if path != ":memory:" {
 		if err := os.Chmod(path, 0o600); err != nil {
 			_ = db.Close()
-			restoreLegacy(path, legacyBackup)
 			return nil, fmt.Errorf("set task store permissions: %w", err)
 		}
 	}
@@ -283,74 +251,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 		return fmt.Errorf("initialize SQLite task store: %w", err)
 	}
 	return nil
-}
-
-func (s *Store) insertTasks(tasks []domain.Task) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, task := range tasks {
-		if task.ID == "" {
-			continue
-		}
-		values, err := taskValues(task)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(insertTaskSQL, values...); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func discoverLegacy(path string) ([]domain.Task, string, error) {
-	if path == ":memory:" {
-		return nil, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if len(data) == 0 || bytes.HasPrefix(data, []byte("SQLite format 3\x00")) {
-			return nil, "", nil
-		}
-		tasks, err := parseLegacy(data, path)
-		return tasks, path, err
-	}
-	if !os.IsNotExist(err) {
-		return nil, "", fmt.Errorf("read task store: %w", err)
-	}
-	ext := filepath.Ext(path)
-	if ext == "" || strings.EqualFold(ext, ".json") {
-		return nil, "", nil
-	}
-	legacyPath := strings.TrimSuffix(path, ext) + ".json"
-	data, err = os.ReadFile(legacyPath)
-	if os.IsNotExist(err) {
-		return nil, "", nil
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("read legacy task store: %w", err)
-	}
-	tasks, err := parseLegacy(data, legacyPath)
-	return tasks, legacyPath, err
-}
-
-func parseLegacy(data []byte, path string) ([]domain.Task, error) {
-	var state fileState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse legacy task store %q: %w", path, err)
-	}
-	return state.Tasks, nil
-}
-
-func restoreLegacy(path, backup string) {
-	if backup == "" {
-		return
-	}
-	_ = os.Remove(path)
-	_ = os.Rename(backup, path)
 }
 
 const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, staging_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at FROM tasks`
