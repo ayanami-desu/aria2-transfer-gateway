@@ -1,0 +1,3 @@
+[submodule "third_party/ariang"]
+	path = third_party/ariang
+	url = https://github.com/mayswind/AriaNg.git

@@ -1,0 +1,54 @@
+services:
+  aria2:
+    image: p3terx/aria2-pro:latest
+    container_name: aria2-transfer-aria2
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      UMASK_SET: "022"
+      RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+      RPC_PORT: "6800"
+      RPC_LISTEN_ALL: "false"
+      LISTEN_PORT: "6888"
+      UPDATE_TRACKERS: "true"
+      GATEWAY_URL: "http://127.0.0.1:8787"
+      GATEWAY_API_TOKEN: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+    volumes:
+      - "${ARIA2_CONFIG_DIR:-./runtime/aria2/config}:/config"
+      - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
+      - "${ARIA2_STAGING_DIR:-./runtime/aria2/staging}:/staging"
+      - ./hooks:/hooks:ro
+      - ./hooks/aria2-init-hooks.sh:/etc/cont-init.d/29-gateway-hooks:ro
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/gateway.Dockerfile
+    container_name: aria2-transfer-gateway
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - aria2
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+      GATEWAY_API_TOKEN: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:?set GATEWAY_CORS_ORIGINS}"
+      OPENLIST_TOKEN: "${OPENLIST_TOKEN:-}"
+    volumes:
+      - ./deploy/gateway.yaml:/app/gateway.yaml:ro
+      - "${GATEWAY_DATA_DIR:-./runtime/gateway}:/data"
+      - "${ARIA2_STAGING_DIR:-./runtime/aria2/staging}:/staging"
+      - "${RCLONE_CONFIG_DIR:-./runtime/rclone}:/rclone"
+
+  ariang:
+    build:
+      context: .
+      dockerfile: deploy/ariang.Dockerfile
+    container_name: aria2-transfer-ariang
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway

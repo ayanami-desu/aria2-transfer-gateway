@@ -1,0 +1,8 @@
+.git
+.gitignore
+node_modules
+third_party/ariang/node_modules
+third_party/ariang/dist
+runtime
+data
+*.log
