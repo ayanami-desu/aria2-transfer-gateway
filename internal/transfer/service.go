@@ -95,6 +95,7 @@ type Service struct {
 	store                *store.Store
 	downloader           aria2.Downloader
 	providers            map[string]provider.Provider
+	destinationsMu       sync.RWMutex
 	destinations         map[string]domain.Destination
 	defaultDestinationID string
 	stagingRoot          string
@@ -118,11 +119,18 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 	if err := os.MkdirAll(absoluteStagingRoot, 0o750); err != nil {
 		return nil, fmt.Errorf("create staging directory: %w", err)
 	}
-	destinationMap := make(map[string]domain.Destination, len(destinations))
-	for _, destination := range destinations {
+	if err := taskStore.InitializeDestinations(destinations, defaultDestinationID); err != nil {
+		return nil, err
+	}
+	persistedDestinations, persistedDefaultID, err := taskStore.DestinationSettings()
+	if err != nil {
+		return nil, err
+	}
+	destinationMap := make(map[string]domain.Destination, len(persistedDestinations))
+	for _, destination := range persistedDestinations {
 		destinationMap[destination.ID] = destination
 	}
-	defaultDestinationID = strings.TrimSpace(defaultDestinationID)
+	defaultDestinationID = strings.TrimSpace(persistedDefaultID)
 	if defaultDestinationID != "" {
 		if _, exists := destinationMap[defaultDestinationID]; !exists {
 			return nil, fmt.Errorf("default destination %q not found", defaultDestinationID)
@@ -177,10 +185,7 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 	}
 	options := sanitizeOptions(input.Options)
 	destinationID := strings.TrimSpace(input.DestinationID)
-	if destinationID == "" {
-		destinationID = s.defaultDestinationID
-	}
-	destination, exists := s.destinations[destinationID]
+	destination, exists := s.destinationOrDefault(destinationID)
 	if !exists {
 		return domain.Task{}, fmt.Errorf("destination %q not found", destinationID)
 	}
@@ -740,6 +745,10 @@ func (s *Service) Get(id string) (domain.Task, error) {
 	return s.store.Get(id)
 }
 
+func (s *Service) GetByGID(gid string) (domain.Task, error) {
+	return s.store.FindByGID(strings.TrimSpace(gid))
+}
+
 func (s *Service) List() []domain.Task {
 	return s.store.List()
 }
@@ -749,15 +758,18 @@ func (s *Service) ListFiltered(filter store.TaskFilter) ([]domain.Task, error) {
 }
 
 func (s *Service) Destinations() []domain.Destination {
+	s.destinationsMu.RLock()
+	defer s.destinationsMu.RUnlock()
 	result := make([]domain.Destination, 0, len(s.destinations))
 	for _, destination := range s.destinations {
 		result = append(result, destination)
 	}
+	defaultDestinationID := s.defaultDestinationID
 	sort.Slice(result, func(i, j int) bool {
-		if result[i].ID == s.defaultDestinationID {
+		if result[i].ID == defaultDestinationID {
 			return true
 		}
-		if result[j].ID == s.defaultDestinationID {
+		if result[j].ID == defaultDestinationID {
 			return false
 		}
 		return result[i].ID < result[j].ID
@@ -766,7 +778,7 @@ func (s *Service) Destinations() []domain.Destination {
 }
 
 func (s *Service) View(task domain.Task) domain.TaskView {
-	destination := s.destinations[task.DestinationID]
+	destination, _ := s.destination(task.DestinationID)
 	return task.View(destination.Name)
 }
 
@@ -810,7 +822,7 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 	if err != nil || task.Status == domain.StatusDeleting {
 		return
 	}
-	destination, exists := s.destinations[task.DestinationID]
+	destination, exists := s.destination(task.DestinationID)
 	if !exists {
 		if !s.shouldStopTransfer(transferCtx, id) {
 			s.markFailed(id, fmt.Errorf("destination %q not found", task.DestinationID))

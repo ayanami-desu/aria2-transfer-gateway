@@ -250,3 +250,78 @@ func TestDeleteTasksByGID(t *testing.T) {
 		t.Fatalf("staging path still exists: %v", err)
 	}
 }
+
+func TestDestinationManagementRedactsSecretsAndFindsMagnetTask(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := transfer.NewService(
+		taskStore,
+		apiFakeDownloader{},
+		map[string]provider.Provider{"openlist": apiFakeProvider{}, "rclone": apiFakeProvider{}},
+		[]domain.Destination{{ID: "backup", Name: "Backup", Provider: "rclone", Remote: "backup"}},
+		"backup",
+		filepath.Join(t.TempDir(), "staging"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"*"}).Handler()
+
+	createDestination := httptest.NewRequest(http.MethodPost, "/api/v1/destinations", strings.NewReader(`{"id":"openlist","name":"OpenList","provider":"openlist","endpoint":"https://files.example.test","mount":"/drive","token":"destination-secret"}`))
+	createDestination.Header.Set("Authorization", "Bearer secret")
+	createdDestination := httptest.NewRecorder()
+	handler.ServeHTTP(createdDestination, createDestination)
+	if createdDestination.Code != http.StatusCreated {
+		t.Fatalf("create destination status = %d, body = %s", createdDestination.Code, createdDestination.Body.String())
+	}
+	if strings.Contains(createdDestination.Body.String(), "destination-secret") || strings.Contains(createdDestination.Body.String(), `"token"`) {
+		t.Fatalf("destination response exposed token: %s", createdDestination.Body.String())
+	}
+	if !strings.Contains(createdDestination.Body.String(), `"has_token":true`) {
+		t.Fatalf("destination response did not report stored token: %s", createdDestination.Body.String())
+	}
+
+	setDefault := httptest.NewRequest(http.MethodPut, "/api/v1/destinations/openlist/default", nil)
+	setDefault.Header.Set("Authorization", "Bearer secret")
+	defaultResponse := httptest.NewRecorder()
+	handler.ServeHTTP(defaultResponse, setDefault)
+	if defaultResponse.Code != http.StatusNoContent {
+		t.Fatalf("set default status = %d, body = %s", defaultResponse.Code, defaultResponse.Body.String())
+	}
+
+	magnetURI := "magnet:?xt=urn:btih:0123456789abcdef&dn=Exact%20Name&tr=https%3A%2F%2Ftracker.example.test"
+	createTask := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(`{"urls":["`+magnetURI+`"],"target_path":"/"}`))
+	createTask.Header.Set("Authorization", "Bearer secret")
+	createdTask := httptest.NewRecorder()
+	handler.ServeHTTP(createdTask, createTask)
+	if createdTask.Code != http.StatusCreated {
+		t.Fatalf("create task status = %d, body = %s", createdTask.Code, createdTask.Body.String())
+	}
+
+	byGID := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/by-gid/gid-api", nil)
+	byGID.Header.Set("Authorization", "Bearer secret")
+	gotTask := httptest.NewRecorder()
+	handler.ServeHTTP(gotTask, byGID)
+	if gotTask.Code != http.StatusOK {
+		t.Fatalf("get by GID status = %d, body = %s", gotTask.Code, gotTask.Body.String())
+	}
+	var taskView domain.TaskView
+	if err := json.Unmarshal(gotTask.Body.Bytes(), &taskView); err != nil {
+		t.Fatal(err)
+	}
+	if taskView.DestinationID != "openlist" || len(taskView.URLs) != 1 || taskView.URLs[0] != magnetURI {
+		t.Fatalf("task view = %#v", taskView)
+	}
+
+	listDestinations := httptest.NewRequest(http.MethodGet, "/api/v1/destinations", nil)
+	listDestinations.Header.Set("Authorization", "Bearer secret")
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, listDestinations)
+	if strings.Contains(listed.Body.String(), "destination-secret") || strings.Contains(listed.Body.String(), `"token"`) {
+		t.Fatalf("destination list exposed token: %s", listed.Body.String())
+	}
+}

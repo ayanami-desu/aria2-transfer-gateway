@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ type TaskView struct {
 	GID           string    `json:"gid,omitempty"`
 	Type          string    `json:"type"`
 	URLs          []string  `json:"urls,omitempty"`
+	FileNames     []string  `json:"file_names"`
 	DestinationID string    `json:"destination_id"`
 	Destination   string    `json:"destination"`
 	TargetPath    string    `json:"target_path"`
@@ -74,6 +76,7 @@ func (t Task) View(destinationName string) TaskView {
 		GID:           t.GID,
 		Type:          t.Type,
 		URLs:          append([]string(nil), t.URLs...),
+		FileNames:     taskFileNames(t),
 		DestinationID: t.DestinationID,
 		Destination:   destinationName,
 		TargetPath:    t.TargetPath,
@@ -86,6 +89,35 @@ func (t Task) View(destinationName string) TaskView {
 		UpdatedAt:     t.UpdatedAt,
 		CompletedAt:   t.CompletedAt,
 	}
+}
+
+func taskFileNames(task Task) []string {
+	values := append([]string(nil), task.FinalFiles...)
+	if len(values) == 0 && task.Options["out"] != "" {
+		values = append(values, task.Options["out"])
+	}
+	if len(values) == 0 {
+		for _, rawURL := range task.URLs {
+			parsed, err := url.Parse(rawURL)
+			if err == nil && parsed.Scheme != "magnet" {
+				values = append(values, parsed.Path)
+			}
+		}
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		name := path.Base(strings.TrimSpace(strings.ReplaceAll(value, "\\", "/")))
+		if name == "" || name == "." || name == "/" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
 }
 
 func NormalizeTargetPath(value string) (string, error) {

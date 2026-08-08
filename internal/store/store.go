@@ -247,6 +247,21 @@ CREATE INDEX IF NOT EXISTS idx_tasks_gid ON tasks(gid);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_destination ON tasks(destination_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
+CREATE TABLE IF NOT EXISTS destinations (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	endpoint TEXT NOT NULL DEFAULT '',
+	mount TEXT NOT NULL DEFAULT '',
+	remote TEXT NOT NULL DEFAULT '',
+	root TEXT NOT NULL DEFAULT '',
+	rclone_config TEXT NOT NULL DEFAULT '',
+	token TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS gateway_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL DEFAULT ''
+);
 `); err != nil {
 		return fmt.Errorf("initialize SQLite task store: %w", err)
 	}

@@ -109,3 +109,45 @@ func TestStoreFiltersTasks(t *testing.T) {
 		t.Fatalf("limited tasks = %d, want 2", len(limited))
 	}
 }
+
+func TestStorePersistsDestinationSettings(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "tasks.db")
+	taskStore, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := domain.Destination{ID: "openlist", Name: "OpenList", Provider: "openlist", Endpoint: "https://files.example.test", Mount: "/drive", Token: "secret-token"}
+	if err := taskStore.InitializeDestinations([]domain.Destination{initial}, initial.ID); err != nil {
+		t.Fatal(err)
+	}
+	second := domain.Destination{ID: "rclone", Name: "Rclone", Provider: "rclone", Remote: "backup", Root: "/archive", RcloneConfig: "/config/rclone.conf"}
+	if err := taskStore.CreateDestination(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := taskStore.SetDefaultDestination(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := taskStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	destinations, defaultID, err := reopened.DestinationSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(destinations) != 2 || defaultID != second.ID {
+		t.Fatalf("destination settings = %#v, default = %q", destinations, defaultID)
+	}
+	stored, err := reopened.GetDestination(initial.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Token != initial.Token {
+		t.Fatalf("stored token = %q, want persisted token", stored.Token)
+	}
+}

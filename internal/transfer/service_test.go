@@ -1063,3 +1063,74 @@ func TestServiceRecoversDeletingTaskOnStart(t *testing.T) {
 		t.Fatalf("staging path still exists: %v", err)
 	}
 }
+
+func TestServiceManagesPersistentDestinationsAndDynamicDefault(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "tasks.db")
+	taskStore, err := store.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	legacy := domain.Destination{ID: "legacy", Name: "Legacy", Provider: "rclone", Remote: "legacy"}
+	service, err := NewService(taskStore, fakeDownloader{}, map[string]provider.Provider{"openlist": &fakeProvider{}, "rclone": &fakeProvider{}}, []domain.Destination{legacy}, legacy.ID, stagingRoot, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed, err := service.CreateDestination(domain.Destination{ID: "managed", Name: "Managed", Provider: "openlist", Endpoint: "https://files.example.test/", Mount: "/drive", Token: "secret-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.Endpoint != "https://files.example.test" {
+		t.Fatalf("normalized endpoint = %q", managed.Endpoint)
+	}
+	if err := service.SetDefaultDestination(managed.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), TaskInput{URLs: []string{"https://example.test/media/movie.mkv"}, TargetPath: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.DestinationID != managed.ID {
+		t.Fatalf("default destination = %q, want %q", created.DestinationID, managed.ID)
+	}
+	view := service.View(created)
+	if len(view.FileNames) != 1 || view.FileNames[0] != "movie.mkv" {
+		t.Fatalf("task file names = %#v", view.FileNames)
+	}
+	explicit, err := service.Create(context.Background(), TaskInput{URLs: []string{"https://example.test/explicit.bin"}, DestinationID: legacy.ID, TargetPath: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.DestinationID != legacy.ID {
+		t.Fatalf("explicit destination = %q, want %q", explicit.DestinationID, legacy.ID)
+	}
+	if _, err := service.UpdateDestination(managed.ID, domain.Destination{Name: "Managed Updated", Provider: "openlist", Endpoint: "https://files.example.test", Mount: "/drive"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := taskStore.GetDestination(managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Token != "secret-token" {
+		t.Fatalf("blank update replaced token: %q", stored.Token)
+	}
+	if err := service.DeleteDestination(managed.ID); !errors.Is(err, ErrDefaultDestination) {
+		t.Fatalf("delete default error = %v", err)
+	}
+	if err := taskStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted, err := NewService(reopened, fakeDownloader{}, map[string]provider.Provider{"openlist": &fakeProvider{}, "rclone": &fakeProvider{}}, nil, "", stagingRoot, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.DefaultDestinationID() != managed.ID || len(restarted.Destinations()) != 2 {
+		t.Fatalf("restarted destinations = %#v, default = %q", restarted.Destinations(), restarted.DefaultDestinationID())
+	}
+}

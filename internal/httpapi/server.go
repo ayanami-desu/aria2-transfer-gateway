@@ -77,12 +77,29 @@ type DeleteTasksByGIDResponse struct {
 	Failed   []DeleteGIDFailure `json:"failed"`
 }
 
+type destinationRequest struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	Endpoint     string `json:"endpoint"`
+	Mount        string `json:"mount"`
+	Remote       string `json:"remote"`
+	Root         string `json:"root"`
+	RcloneConfig string `json:"rclone_config"`
+	Token        string `json:"token"`
+}
+
 type destinationView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
-	Root     string `json:"root,omitempty"`
-	Mount    string `json:"mount,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	Mount        string `json:"mount,omitempty"`
+	Remote       string `json:"remote,omitempty"`
+	Root         string `json:"root,omitempty"`
+	RcloneConfig string `json:"rclone_config,omitempty"`
+	HasToken     bool   `json:"has_token"`
+	IsDefault    bool   `json:"is_default"`
 }
 
 func NewServer(service *transfer.Service, token string, corsOrigins []string) *Server {
@@ -123,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/api/v1/destinations", s.handleDestinations)
+	s.mux.HandleFunc("/api/v1/destinations/", s.handleDestinationPath)
 	s.mux.HandleFunc("/api/v1/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/v1/tasks/retry", s.handleRetryTasks)
 	s.mux.HandleFunc("/api/v1/tasks/delete", s.handleDeleteTasks)
@@ -141,21 +159,86 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDestinations(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		result := make([]destinationView, 0)
+		for _, destination := range s.service.Destinations() {
+			result = append(result, s.viewDestination(destination))
+		}
+		writeJSON(w, http.StatusOK, result)
+	case http.MethodPost:
+		var request destinationRequest
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		destination, err := s.service.CreateDestination(request.destination())
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, s.viewDestination(destination))
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleDestinationPath(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/destinations/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "destination not found")
 		return
 	}
-	result := make([]destinationView, 0)
-	for _, destination := range s.service.Destinations() {
-		result = append(result, destinationView{
-			ID:       destination.ID,
-			Name:     destination.Name,
-			Provider: destination.Provider,
-			Root:     destination.Root,
-			Mount:    destination.Mount,
-		})
+	id := parts[0]
+	if len(parts) == 2 && parts[1] == "default" && r.Method == http.MethodPut {
+		if err := s.service.SetDefaultDestination(id); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	if len(parts) == 1 && r.Method == http.MethodPut {
+		var request destinationRequest
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		destination, err := s.service.UpdateDestination(id, request.destination())
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.viewDestination(destination))
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if err := s.service.DeleteDestination(id); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeError(w, http.StatusNotFound, "destination route not found")
+}
+
+func (request destinationRequest) destination() domain.Destination {
+	return domain.Destination{
+		ID: request.ID, Name: request.Name, Provider: request.Provider,
+		Endpoint: request.Endpoint, Mount: request.Mount, Remote: request.Remote,
+		Root: request.Root, RcloneConfig: request.RcloneConfig, Token: request.Token,
+	}
+}
+
+func (s *Server) viewDestination(destination domain.Destination) destinationView {
+	return destinationView{
+		ID: destination.ID, Name: destination.Name, Provider: destination.Provider,
+		Endpoint: destination.Endpoint, Mount: destination.Mount, Remote: destination.Remote,
+		Root: destination.Root, RcloneConfig: destination.RcloneConfig,
+		HasToken: destination.Token != "", IsDefault: destination.ID == s.service.DefaultDestinationID(),
+	}
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +415,15 @@ func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	if len(parts) == 2 && parts[0] == "by-gid" && r.Method == http.MethodGet {
+		task, err := s.service.GetByGID(parts[1])
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.service.View(task))
+		return
+	}
 	id := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
 		task, err := s.service.Get(id)
@@ -419,7 +511,7 @@ func (s *Server) setCORS(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Token")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 }
 func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
@@ -432,8 +524,11 @@ func decodeJSON(r *http.Request, target any) error {
 
 func writeServiceError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrDestinationNotFound):
 		status = http.StatusNotFound
+	case errors.Is(err, store.ErrAlreadyExists), errors.Is(err, store.ErrDestinationAlreadyExists), errors.Is(err, transfer.ErrDestinationInUse), errors.Is(err, transfer.ErrDefaultDestination):
+		status = http.StatusConflict
 	}
 	writeError(w, status, err.Error())
 }
