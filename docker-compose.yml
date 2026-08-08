@@ -32,7 +32,7 @@ services:
     environment:
       ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
       GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
-      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:?set GATEWAY_CORS_ORIGINS}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - "${GATEWAY_DATA_DIR:-./runtime/gateway}:/data"
