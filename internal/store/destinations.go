@@ -11,7 +11,7 @@ import (
 var ErrDestinationNotFound = errors.New("destination not found")
 var ErrDestinationAlreadyExists = errors.New("destination already exists")
 
-const selectDestinationSQL = `SELECT id, name, provider, endpoint, mount, remote, root, rclone_config, token FROM destinations`
+const selectDestinationSQL = `SELECT id, name, provider, endpoint, mount, remote, root, rclone_config, token, proxy FROM destinations`
 
 func (s *Store) InitializeDestinations(destinations []domain.Destination, defaultDestinationID string) error {
 	s.mu.Lock()
@@ -31,7 +31,7 @@ func (s *Store) InitializeDestinations(destinations []domain.Destination, defaul
 		return nil
 	}
 	for _, destination := range destinations {
-		if _, err := tx.Exec(`INSERT INTO destinations (id, name, provider, endpoint, mount, remote, root, rclone_config, token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token); err != nil {
+		if _, err := tx.Exec(`INSERT INTO destinations (id, name, provider, endpoint, mount, remote, root, rclone_config, token, proxy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token, destination.Proxy); err != nil {
 			return fmt.Errorf("initialize destination %q: %w", destination.ID, err)
 		}
 	}
@@ -98,7 +98,7 @@ func (s *Store) CreateDestination(destination domain.Destination) error {
 	if exists != 0 {
 		return ErrDestinationAlreadyExists
 	}
-	if _, err := s.db.Exec(`INSERT INTO destinations (id, name, provider, endpoint, mount, remote, root, rclone_config, token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO destinations (id, name, provider, endpoint, mount, remote, root, rclone_config, token, proxy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token, destination.Proxy); err != nil {
 		return fmt.Errorf("create destination %q: %w", destination.ID, err)
 	}
 	return nil
@@ -107,7 +107,7 @@ func (s *Store) CreateDestination(destination domain.Destination) error {
 func (s *Store) UpdateDestination(destination domain.Destination) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.db.Exec(`UPDATE destinations SET name = ?, provider = ?, endpoint = ?, mount = ?, remote = ?, root = ?, rclone_config = ?, token = ? WHERE id = ?`, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token, destination.ID)
+	result, err := s.db.Exec(`UPDATE destinations SET name = ?, provider = ?, endpoint = ?, mount = ?, remote = ?, root = ?, rclone_config = ?, token = ?, proxy = ? WHERE id = ?`, destination.Name, destination.Provider, destination.Endpoint, destination.Mount, destination.Remote, destination.Root, destination.RcloneConfig, destination.Token, destination.Proxy, destination.ID)
 	if err != nil {
 		return fmt.Errorf("update destination %q: %w", destination.ID, err)
 	}
@@ -163,6 +163,6 @@ func getDestination(row *sql.Row) (domain.Destination, error) {
 
 func scanDestination(row rowScanner) (domain.Destination, error) {
 	var destination domain.Destination
-	err := row.Scan(&destination.ID, &destination.Name, &destination.Provider, &destination.Endpoint, &destination.Mount, &destination.Remote, &destination.Root, &destination.RcloneConfig, &destination.Token)
+	err := row.Scan(&destination.ID, &destination.Name, &destination.Provider, &destination.Endpoint, &destination.Mount, &destination.Remote, &destination.Root, &destination.RcloneConfig, &destination.Token, &destination.Proxy)
 	return destination, err
 }

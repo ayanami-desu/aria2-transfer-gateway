@@ -52,7 +52,7 @@ func main() {
 		providers,
 		runtime.Destinations,
 		runtime.DefaultDestinationID,
-		runtime.Config.StagingDir,
+		runtime.Config.DownloadDir,
 		runtime.Config.WorkerCount,
 	)
 	if err != nil {

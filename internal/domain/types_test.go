@@ -33,3 +33,32 @@ func TestNormalizeTargetPath(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeProxyURL(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{value: "http://127.0.0.1:8080", want: "http://127.0.0.1:8080"},
+		{value: "HTTPS://proxy.example:8443/", want: "https://proxy.example:8443"},
+		{value: "socks5://user:password@proxy.example:1080", want: "socks5://user:password@proxy.example:1080"},
+		{value: "ftp://proxy.example:21", wantErr: true},
+		{value: "http:///missing-host", wantErr: true},
+		{value: "http://proxy.example/path", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			got, err := NormalizeProxyURL(test.value)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("NormalizeProxyURL() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("NormalizeProxyURL() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}

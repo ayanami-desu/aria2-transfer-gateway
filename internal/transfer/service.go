@@ -98,26 +98,26 @@ type Service struct {
 	destinationsMu       sync.RWMutex
 	destinations         map[string]domain.Destination
 	defaultDestinationID string
-	stagingRoot          string
+	downloadRoot         string
 	jobs                 chan string
 	workerCount          int
 	taskRunsMu           sync.Mutex
 	taskRuns             map[string]*taskRun
 }
 
-func NewService(taskStore *store.Store, downloader aria2.Downloader, providers map[string]provider.Provider, destinations []domain.Destination, defaultDestinationID string, stagingRoot string, workerCount int) (*Service, error) {
+func NewService(taskStore *store.Store, downloader aria2.Downloader, providers map[string]provider.Provider, destinations []domain.Destination, defaultDestinationID string, downloadRoot string, workerCount int) (*Service, error) {
 	if taskStore == nil || downloader == nil {
 		return nil, errors.New("task store and downloader are required")
 	}
 	if workerCount <= 0 {
 		workerCount = 1
 	}
-	absoluteStagingRoot, err := filepath.Abs(stagingRoot)
+	absoluteDownloadRoot, err := filepath.Abs(downloadRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolve staging directory: %w", err)
+		return nil, fmt.Errorf("resolve download directory: %w", err)
 	}
-	if err := os.MkdirAll(absoluteStagingRoot, 0o750); err != nil {
-		return nil, fmt.Errorf("create staging directory: %w", err)
+	if err := os.MkdirAll(absoluteDownloadRoot, 0o750); err != nil {
+		return nil, fmt.Errorf("create download directory: %w", err)
 	}
 	if err := taskStore.InitializeDestinations(destinations, defaultDestinationID); err != nil {
 		return nil, err
@@ -136,17 +136,46 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 			return nil, fmt.Errorf("default destination %q not found", defaultDestinationID)
 		}
 	}
+	if err := migrateTaskDownloadPaths(taskStore, absoluteDownloadRoot); err != nil {
+		return nil, err
+	}
 	return &Service{
 		store:                taskStore,
 		downloader:           downloader,
 		providers:            providers,
 		destinations:         destinationMap,
 		defaultDestinationID: defaultDestinationID,
-		stagingRoot:          absoluteStagingRoot,
+		downloadRoot:         absoluteDownloadRoot,
 		jobs:                 make(chan string, workerCount*8),
 		workerCount:          workerCount,
 		taskRuns:             make(map[string]*taskRun),
 	}, nil
+}
+
+func migrateTaskDownloadPaths(taskStore *store.Store, downloadRoot string) error {
+	for _, task := range taskStore.List() {
+		expected := filepath.Join(downloadRoot, task.ID)
+		if filepath.Clean(task.DownloadPath) == filepath.Clean(expected) {
+			continue
+		}
+		info, err := os.Stat(expected)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect migrated download directory for task %q: %w", task.ID, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("migrated download path for task %q is not a directory", task.ID)
+		}
+		if _, err := taskStore.Update(task.ID, func(current *domain.Task) error {
+			current.DownloadPath = expected
+			return nil
+		}); err != nil {
+			return fmt.Errorf("migrate download path for task %q: %w", task.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Start(ctx context.Context) {
@@ -197,9 +226,9 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 	if err != nil {
 		return domain.Task{}, fmt.Errorf("generate task id: %w", err)
 	}
-	stagingPath := filepath.Join(s.stagingRoot, id)
-	if err := os.MkdirAll(stagingPath, 0o750); err != nil {
-		return domain.Task{}, fmt.Errorf("create staging path: %w", err)
+	downloadPath := filepath.Join(s.downloadRoot, id)
+	if err := os.MkdirAll(downloadPath, 0o750); err != nil {
+		return domain.Task{}, fmt.Errorf("create task download directory: %w", err)
 	}
 	now := time.Now().UTC()
 	task := domain.Task{
@@ -210,7 +239,7 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 		Options:       options,
 		DestinationID: destination.ID,
 		TargetPath:    targetPath,
-		StagingPath:   stagingPath,
+		DownloadPath:  downloadPath,
 		Status:        domain.StatusQueued,
 		Cleanup:       input.Cleanup,
 		Pause:         input.Pause,
@@ -218,17 +247,17 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 		UpdatedAt:     now,
 	}
 	if err := s.store.Create(task); err != nil {
-		_ = os.RemoveAll(stagingPath)
+		_ = os.RemoveAll(downloadPath)
 		return domain.Task{}, fmt.Errorf("create task: %w", err)
 	}
 	var gid string
 	switch taskType {
 	case "urls":
-		gid, err = s.downloader.AddURI(ctx, urls, stagingPath, input.Pause, options)
+		gid, err = s.downloader.AddURI(ctx, urls, downloadPath, input.Pause, options)
 	case "torrent":
-		gid, err = s.downloader.AddTorrent(ctx, input.Content, stagingPath, input.Pause, options)
+		gid, err = s.downloader.AddTorrent(ctx, input.Content, downloadPath, input.Pause, options)
 	case "metalink":
-		gid, err = s.downloader.AddMetalink(ctx, input.Content, stagingPath, input.Pause, options)
+		gid, err = s.downloader.AddMetalink(ctx, input.Content, downloadPath, input.Pause, options)
 	}
 	if err != nil {
 		_, _ = s.store.Update(task.ID, func(current *domain.Task) error {
@@ -330,7 +359,7 @@ func (s *Service) rememberGID(id, gid string) error {
 }
 
 func (s *Service) taskIDFromFilePath(filePath string) (string, error) {
-	root, err := filepath.Abs(s.stagingRoot)
+	root, err := filepath.Abs(s.downloadRoot)
 	if err != nil {
 		return "", err
 	}
@@ -340,7 +369,7 @@ func (s *Service) taskIDFromFilePath(filePath string) (string, error) {
 	}
 	relative, err := filepath.Rel(root, absolutePath)
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", errors.New("file path is outside staging root")
+		return "", errors.New("file path is outside download root")
 	}
 	parts := strings.Split(filepath.ToSlash(relative), "/")
 	if len(parts) < 2 || parts[0] == "" {
@@ -371,7 +400,7 @@ func (s *Service) resolveFinalFiles(ctx context.Context, task domain.Task, gid s
 		if err != nil {
 			return nil, currentGID, fmt.Errorf("get aria2 files: %w", err)
 		}
-		finalFiles, finalErr := finalFilePaths(task.StagingPath, files)
+		finalFiles, finalErr := finalFilePaths(task.DownloadPath, files)
 		if finalErr == nil && len(finalFiles) > 0 {
 			if !isCompleteDownload(status) {
 				return nil, currentGID, errFinalFilesNotReady
@@ -422,10 +451,10 @@ func hasFinalFileCandidate(files []aria2.DownloadFile) bool {
 	return false
 }
 
-func finalFilePaths(stagingPath string, files []aria2.DownloadFile) ([]string, error) {
-	root, err := filepath.Abs(stagingPath)
+func finalFilePaths(downloadPath string, files []aria2.DownloadFile) ([]string, error) {
+	root, err := filepath.Abs(downloadPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve staging directory: %w", err)
+		return nil, fmt.Errorf("resolve task download directory: %w", err)
 	}
 	result := make([]string, 0, len(files))
 	seen := make(map[string]struct{}, len(files))
@@ -454,7 +483,7 @@ func finalFilePaths(stagingPath string, files []aria2.DownloadFile) ([]string, e
 			return nil, fmt.Errorf("resolve aria2 file %q: %w", file.Path, err)
 		}
 		if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-			return nil, fmt.Errorf("aria2 file %q is outside staging directory", file.Path)
+			return nil, fmt.Errorf("aria2 file %q is outside task download directory", file.Path)
 		}
 		info, err := os.Lstat(localPath)
 		if err != nil {
@@ -485,10 +514,10 @@ func isAria2MetadataFile(filePath string) bool {
 		strings.EqualFold(filepath.Ext(base), ".aria2")
 }
 
-func cleanupDownloadMetadata(stagingPath string, finalFiles []string) error {
-	root, err := filepath.Abs(stagingPath)
+func cleanupDownloadMetadata(downloadPath string, finalFiles []string) error {
+	root, err := filepath.Abs(downloadPath)
 	if err != nil {
-		return fmt.Errorf("resolve staging directory: %w", err)
+		return fmt.Errorf("resolve task download directory: %w", err)
 	}
 	keep := make(map[string]struct{}, len(finalFiles))
 	for _, file := range finalFiles {
@@ -578,16 +607,16 @@ func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
 		return domain.Task{}, fmt.Errorf("upload retry for task %q: %w", task.ID, errFinalFilesNotReady)
 	}
 
-	stagingPath, err := s.taskStagingPath(task.StagingPath)
+	downloadPath, err := s.taskDownloadPath(task.DownloadPath)
 	if err != nil {
 		return domain.Task{}, fmt.Errorf("upload retry for task %q: %w", task.ID, err)
 	}
-	info, err := os.Stat(stagingPath)
+	info, err := os.Stat(downloadPath)
 	if err != nil {
-		return domain.Task{}, fmt.Errorf("upload retry for task %q: staging directory is unavailable: %w", task.ID, err)
+		return domain.Task{}, fmt.Errorf("upload retry for task %q: download directory is unavailable: %w", task.ID, err)
 	}
 	if !info.IsDir() {
-		return domain.Task{}, fmt.Errorf("upload retry for task %q: staging path is not a directory", task.ID)
+		return domain.Task{}, fmt.Errorf("upload retry for task %q: download path is not a directory", task.ID)
 	}
 	updated, err := s.store.Update(task.ID, func(current *domain.Task) error {
 		if current.Status == domain.StatusDeleting {
@@ -658,8 +687,8 @@ func (s *Service) deleteTask(ctx context.Context, task domain.Task) error {
 			return fmt.Errorf("delete task %q: cancel aria2 task: %w", task.ID, err)
 		}
 	}
-	if err := s.removeStagingIfPresent(task.StagingPath); err != nil {
-		return fmt.Errorf("delete task %q: remove staging directory: %w", task.ID, err)
+	if err := s.removeDownloadIfPresent(task.DownloadPath); err != nil {
+		return fmt.Errorf("delete task %q: remove download directory: %w", task.ID, err)
 	}
 	if err := s.store.Delete(task.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("delete task %q: delete record: %w", task.ID, err)
@@ -702,41 +731,41 @@ func (s *Service) cancelAria2Task(ctx context.Context, gid string) error {
 	return nil
 }
 
-func (s *Service) removeStagingIfPresent(path string) error {
+func (s *Service) removeDownloadIfPresent(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("resolve staging path: %w", err)
+		return fmt.Errorf("resolve download path: %w", err)
 	}
 	if _, err := os.Lstat(absolute); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	stagingPath, err := s.taskStagingPath(absolute)
+	downloadPath, err := s.taskDownloadPath(absolute)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(stagingPath)
+	return os.RemoveAll(downloadPath)
 }
 
-func (s *Service) taskStagingPath(path string) (string, error) {
+func (s *Service) taskDownloadPath(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", errors.New("staging path is empty")
+		return "", errors.New("download path is empty")
 	}
-	root, err := filepath.Abs(s.stagingRoot)
+	root, err := filepath.Abs(s.downloadRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve staging root: %w", err)
+		return "", fmt.Errorf("resolve download root: %w", err)
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve staging path: %w", err)
+		return "", fmt.Errorf("resolve download path: %w", err)
 	}
 	relative, err := filepath.Rel(root, absolute)
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", errors.New("staging path is outside the staging root")
+		return "", errors.New("download path is outside the download root")
 	}
 	return absolute, nil
 }
@@ -842,6 +871,10 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		}
 		current.Status = domain.StatusTransferring
 		current.Error = ""
+		current.TransferTotalBytes = 0
+		current.TransferredBytes = 0
+		current.TransferSpeed = 0
+		current.TransferUpdatedAt = time.Time{}
 		return nil
 	}); err != nil {
 		return
@@ -891,17 +924,18 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 	if s.shouldStopTransfer(transferCtx, id) {
 		return
 	}
-	if err := cleanupDownloadMetadata(task.StagingPath, task.FinalFiles); err != nil {
+	if err := cleanupDownloadMetadata(task.DownloadPath, task.FinalFiles); err != nil {
 		if !s.shouldStopTransfer(transferCtx, id) {
 			s.markFailed(id, err)
 		}
 		return
 	}
 	err = backend.Transfer(transferCtx, provider.TransferRequest{
-		SourceDir:   task.StagingPath,
+		SourceDir:   task.DownloadPath,
 		TargetPath:  task.TargetPath,
 		Files:       task.FinalFiles,
 		Destination: destination,
+		OnProgress:  s.transferProgressReporter(id),
 	})
 	if err != nil {
 		if !s.shouldStopTransfer(transferCtx, id) {
@@ -913,7 +947,7 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		return
 	}
 	if task.Cleanup {
-		if err := s.removeStagingIfPresent(task.StagingPath); err != nil {
+		if err := s.removeDownloadIfPresent(task.DownloadPath); err != nil {
 			if !s.shouldStopTransfer(transferCtx, id) {
 				s.markFailed(id, fmt.Errorf("transfer succeeded but cleanup failed: %w", err))
 			}
@@ -929,6 +963,11 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		}
 		current.Status = domain.StatusCompleted
 		current.Error = ""
+		if current.TransferTotalBytes > 0 {
+			current.TransferredBytes = current.TransferTotalBytes
+		}
+		current.TransferSpeed = 0
+		current.TransferUpdatedAt = time.Now().UTC()
 		current.CompletedAt = time.Now().UTC()
 		return nil
 	})
@@ -941,9 +980,50 @@ func (s *Service) markFailed(id string, transferErr error) {
 		}
 		current.Status = domain.StatusFailed
 		current.Error = transferErr.Error()
+		current.TransferSpeed = 0
 		current.RetryCount++
 		return nil
 	})
+}
+
+func (s *Service) transferProgressReporter(id string) func(provider.TransferProgress) {
+	var lastUpdate time.Time
+	var lastBytes int64
+	return func(progress provider.TransferProgress) {
+		if progress.TotalBytes < 0 {
+			progress.TotalBytes = 0
+		}
+		if progress.TransferredBytes < 0 {
+			progress.TransferredBytes = 0
+		}
+		if progress.TotalBytes > 0 && progress.TransferredBytes > progress.TotalBytes {
+			progress.TransferredBytes = progress.TotalBytes
+		}
+		now := time.Now().UTC()
+		complete := progress.TotalBytes > 0 && progress.TransferredBytes >= progress.TotalBytes
+		if !lastUpdate.IsZero() && now.Sub(lastUpdate) < time.Second && !complete {
+			return
+		}
+		var speed int64
+		if !lastUpdate.IsZero() && progress.TransferredBytes >= lastBytes {
+			elapsed := now.Sub(lastUpdate).Seconds()
+			if elapsed > 0 {
+				speed = int64(float64(progress.TransferredBytes-lastBytes) / elapsed)
+			}
+		}
+		_, _ = s.store.Update(id, func(current *domain.Task) error {
+			if current.Status == domain.StatusDeleting {
+				return errTaskDeleting
+			}
+			current.TransferTotalBytes = progress.TotalBytes
+			current.TransferredBytes = progress.TransferredBytes
+			current.TransferSpeed = speed
+			current.TransferUpdatedAt = now
+			return nil
+		})
+		lastUpdate = now
+		lastBytes = progress.TransferredBytes
+	}
 }
 
 func (s *Service) registerTaskRun(id string, run *taskRun) bool {

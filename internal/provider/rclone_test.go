@@ -14,9 +14,11 @@ func TestRcloneTransferBuildsArgumentVector(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	filesFile := filepath.Join(dir, "files")
+	envFile := filepath.Join(dir, "env")
 	binary := filepath.Join(dir, "rclone-fake")
 	script := `#!/bin/sh
 printf '%s\n' "$@" > "$RCLONE_TEST_ARGS"
+printf '%s\n' "$http_proxy" "$https_proxy" "$HTTP_PROXY" "$HTTPS_PROXY" > "$RCLONE_TEST_ENV"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--files-from0" ]; then
     cat "$2" > "$RCLONE_TEST_FILES"
@@ -31,9 +33,10 @@ done
 	}
 	t.Setenv("RCLONE_TEST_ARGS", argsFile)
 	t.Setenv("RCLONE_TEST_FILES", filesFile)
+	t.Setenv("RCLONE_TEST_ENV", envFile)
 
 	err := NewRclone(binary).Transfer(context.Background(), TransferRequest{
-		SourceDir:  "/tmp/staging/task-1",
+		SourceDir:  "/tmp/downloads/task-1",
 		TargetPath: "/movies/2026",
 		Files:      []string{"movie.mkv", "subtitles.srt"},
 		Destination: domain.Destination{
@@ -41,6 +44,7 @@ done
 			Remote:       "remote",
 			Root:         "/library",
 			RcloneConfig: "/etc/rclone.conf",
+			Proxy:        "socks5://proxy-user:proxy-pass@proxy.example:1080",
 		},
 	})
 	if err != nil {
@@ -51,7 +55,7 @@ done
 		t.Fatal(err)
 	}
 	args := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(args) != 7 || args[0] != "copy" || args[1] != "/tmp/staging/task-1" || args[2] != "remote:library/movies/2026" || args[3] != "--files-from0" || args[5] != "--config" || args[6] != "/etc/rclone.conf" {
+	if len(args) != 7 || args[0] != "copy" || args[1] != "/tmp/downloads/task-1" || args[2] != "remote:library/movies/2026" || args[3] != "--files-from0" || args[5] != "--config" || args[6] != "/etc/rclone.conf" {
 		t.Fatalf("args = %#v", args)
 	}
 	fileList, err := os.ReadFile(filesFile)
@@ -60,5 +64,13 @@ done
 	}
 	if string(fileList) != "movie.mkv\x00subtitles.srt\x00" {
 		t.Fatalf("file list = %q", fileList)
+	}
+	proxyEnvironment, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProxyEnvironment := strings.Repeat("socks5://proxy-user:proxy-pass@proxy.example:1080\n", 4)
+	if string(proxyEnvironment) != wantProxyEnvironment {
+		t.Fatalf("proxy environment = %q", proxyEnvironment)
 	}
 }

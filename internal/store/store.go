@@ -232,13 +232,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 	options TEXT,
 	destination_id TEXT NOT NULL DEFAULT '',
 	target_path TEXT NOT NULL DEFAULT '/',
-	staging_path TEXT NOT NULL DEFAULT '',
+	download_path TEXT NOT NULL DEFAULT '',
 	final_files TEXT,
 	status TEXT NOT NULL DEFAULT '',
 	error TEXT NOT NULL DEFAULT '',
 	retry_count INTEGER NOT NULL DEFAULT 0,
 	cleanup INTEGER NOT NULL DEFAULT 0,
 	pause INTEGER NOT NULL DEFAULT 0,
+	transfer_total_bytes INTEGER NOT NULL DEFAULT 0,
+	transferred_bytes INTEGER NOT NULL DEFAULT 0,
+	transfer_speed INTEGER NOT NULL DEFAULT 0,
+	transfer_updated_at TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	completed_at TEXT
@@ -256,6 +260,7 @@ CREATE TABLE IF NOT EXISTS destinations (
 	remote TEXT NOT NULL DEFAULT '',
 	root TEXT NOT NULL DEFAULT '',
 	rclone_config TEXT NOT NULL DEFAULT '',
+	proxy TEXT NOT NULL DEFAULT '',
 	token TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS gateway_settings (
@@ -265,14 +270,87 @@ CREATE TABLE IF NOT EXISTS gateway_settings (
 `); err != nil {
 		return fmt.Errorf("initialize SQLite task store: %w", err)
 	}
+	if err := renameSQLiteColumn(s.db, "tasks", "staging_path", "download_path"); err != nil {
+		return err
+	}
+	if err := ensureSQLiteColumns(s.db, "destinations", map[string]string{"proxy": "TEXT NOT NULL DEFAULT ''"}); err != nil {
+		return err
+	}
+	if err := ensureSQLiteColumns(s.db, "tasks", map[string]string{
+		"transfer_total_bytes": "INTEGER NOT NULL DEFAULT 0",
+		"transferred_bytes":    "INTEGER NOT NULL DEFAULT 0",
+		"transfer_speed":       "INTEGER NOT NULL DEFAULT 0",
+		"transfer_updated_at":  "TEXT",
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
-const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, staging_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at FROM tasks`
+func sqliteColumnNames(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close %s schema: %w", table, err)
+	}
+	return existing, nil
+}
 
-const insertTaskSQL = `INSERT INTO tasks (id, gid, type, urls, content, options, destination_id, target_path, staging_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+func ensureSQLiteColumns(db *sql.DB, table string, columns map[string]string) error {
+	existing, err := sqliteColumnNames(db, table)
+	if err != nil {
+		return err
+	}
+	for name, definition := range columns {
+		if _, found := existing[name]; found {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition); err != nil {
+			return fmt.Errorf("add %s.%s column: %w", table, name, err)
+		}
+	}
+	return nil
+}
 
-const updateTaskSQL = `UPDATE tasks SET gid = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, staging_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
+func renameSQLiteColumn(db *sql.DB, table, oldName, newName string) error {
+	existing, err := sqliteColumnNames(db, table)
+	if err != nil {
+		return err
+	}
+	if _, found := existing[newName]; found {
+		return nil
+	}
+	if _, found := existing[oldName]; !found {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` RENAME COLUMN ` + oldName + ` TO ` + newName); err != nil {
+		return fmt.Errorf("rename %s.%s to %s: %w", table, oldName, newName, err)
+	}
+	return nil
+}
+
+const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, transfer_total_bytes, transferred_bytes, transfer_speed, transfer_updated_at, created_at, updated_at, completed_at FROM tasks`
+
+const insertTaskSQL = `INSERT INTO tasks (id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, transfer_total_bytes, transferred_bytes, transfer_speed, transfer_updated_at, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+const updateTaskSQL = `UPDATE tasks SET gid = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, download_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, transfer_total_bytes = ?, transferred_bytes = ?, transfer_speed = ?, transfer_updated_at = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
 
 func buildListQuery(filter TaskFilter) (string, []any) {
 	query := selectTaskSQL
@@ -328,6 +406,7 @@ func scanTask(row rowScanner) (domain.Task, error) {
 	var urlsRaw, optionsRaw, finalFilesRaw sql.NullString
 	var completedAtRaw sql.NullString
 	var retryCount, cleanup, pause int64
+	var transferUpdatedAtRaw sql.NullString
 	var createdAtRaw, updatedAtRaw string
 	if err := row.Scan(
 		&task.ID,
@@ -338,13 +417,17 @@ func scanTask(row rowScanner) (domain.Task, error) {
 		&optionsRaw,
 		&task.DestinationID,
 		&task.TargetPath,
-		&task.StagingPath,
+		&task.DownloadPath,
 		&finalFilesRaw,
 		&task.Status,
 		&task.Error,
 		&retryCount,
 		&cleanup,
 		&pause,
+		&task.TransferTotalBytes,
+		&task.TransferredBytes,
+		&task.TransferSpeed,
+		&transferUpdatedAtRaw,
 		&createdAtRaw,
 		&updatedAtRaw,
 		&completedAtRaw,
@@ -366,6 +449,11 @@ func scanTask(row rowScanner) (domain.Task, error) {
 	}
 	if task.UpdatedAt, err = parseTaskTime(updatedAtRaw); err != nil {
 		return domain.Task{}, fmt.Errorf("decode task updated time: %w", err)
+	}
+	if transferUpdatedAtRaw.Valid {
+		if task.TransferUpdatedAt, err = parseTaskTime(transferUpdatedAtRaw.String); err != nil {
+			return domain.Task{}, fmt.Errorf("decode task transfer update time: %w", err)
+		}
 	}
 	if completedAtRaw.Valid {
 		if task.CompletedAt, err = parseTaskTime(completedAtRaw.String); err != nil {
@@ -394,6 +482,10 @@ func taskValues(task domain.Task) ([]any, error) {
 			return nil, fmt.Errorf("encode task final files: %w", err)
 		}
 	}
+	var transferUpdatedAt any
+	if !task.TransferUpdatedAt.IsZero() {
+		transferUpdatedAt = formatTaskTime(task.TransferUpdatedAt)
+	}
 	var completedAt any
 	if !task.CompletedAt.IsZero() {
 		completedAt = formatTaskTime(task.CompletedAt)
@@ -407,13 +499,17 @@ func taskValues(task domain.Task) ([]any, error) {
 		string(options),
 		task.DestinationID,
 		task.TargetPath,
-		task.StagingPath,
+		task.DownloadPath,
 		finalFiles,
 		task.Status,
 		task.Error,
 		task.RetryCount,
 		boolValue(task.Cleanup),
 		boolValue(task.Pause),
+		task.TransferTotalBytes,
+		task.TransferredBytes,
+		task.TransferSpeed,
+		transferUpdatedAt,
 		formatTaskTime(task.CreatedAt),
 		formatTaskTime(task.UpdatedAt),
 		completedAt,

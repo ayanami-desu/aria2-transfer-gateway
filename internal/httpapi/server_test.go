@@ -63,7 +63,7 @@ func TestHandlerAuthenticatesAndCreatesTask(t *testing.T) {
 		map[string]provider.Provider{"fake": apiFakeProvider{}},
 		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
 		"",
-		filepath.Join(t.TempDir(), "staging"),
+		filepath.Join(t.TempDir(), "download"),
 		1,
 	)
 	if err != nil {
@@ -99,14 +99,14 @@ func TestTaskFilteringAndBatchRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	downloadRoot := filepath.Join(t.TempDir(), "download")
 	service, err := transfer.NewService(
 		taskStore,
 		apiFakeDownloader{},
 		map[string]provider.Provider{"fake": apiFakeProvider{}},
 		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
 		"",
-		stagingRoot,
+		downloadRoot,
 		1,
 	)
 	if err != nil {
@@ -114,13 +114,13 @@ func TestTaskFilteringAndBatchRetry(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	for _, task := range []domain.Task{
-		{ID: "failed-movie", GID: "gid-failed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "failed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now},
-		{ID: "completed-movie", GID: "gid-completed", DestinationID: "drive", TargetPath: "/movies", StagingPath: filepath.Join(stagingRoot, "completed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusCompleted, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
+		{ID: "failed-movie", GID: "gid-failed", DestinationID: "drive", TargetPath: "/movies", DownloadPath: filepath.Join(downloadRoot, "failed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now},
+		{ID: "completed-movie", GID: "gid-completed", DestinationID: "drive", TargetPath: "/movies", DownloadPath: filepath.Join(downloadRoot, "completed-movie"), FinalFiles: []string{"movie.mkv"}, Status: domain.StatusCompleted, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
 	} {
 		if err := taskStore.Create(task); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+		if err := os.MkdirAll(task.DownloadPath, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,36 +195,32 @@ func TestDeleteTasksByGID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer taskStore.Close()
-	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	downloadRoot := filepath.Join(t.TempDir(), "download")
 	service, err := transfer.NewService(
 		taskStore,
 		apiFakeDownloader{},
 		map[string]provider.Provider{"fake": apiFakeProvider{}},
 		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
 		"",
-		stagingRoot,
+		downloadRoot,
 		1,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := domain.Task{
-		ID:            "delete-by-gid",
+	task := domain.Task{ID: "delete-by-gid",
 		GID:           "gid-delete-by-gid",
 		DestinationID: "drive",
-		TargetPath:    "/",
-		StagingPath:   filepath.Join(stagingRoot, "delete-by-gid"),
-		Status:        domain.StatusDownloading,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
-	}
+		TargetPath:    "/", DownloadPath: filepath.Join(downloadRoot, "delete-by-gid"), Status: domain.StatusDownloading,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC()}
 	if err := taskStore.Create(task); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(task.StagingPath, 0o750); err != nil {
+	if err := os.MkdirAll(task.DownloadPath, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(task.StagingPath, "partial.bin"), []byte("partial"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(task.DownloadPath, "partial.bin"), []byte("partial"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(service, "secret", []string{"*"}).Handler()
@@ -246,8 +242,8 @@ func TestDeleteTasksByGID(t *testing.T) {
 	if _, err := taskStore.Get(task.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("deleted task lookup error = %v, want not found", err)
 	}
-	if _, err := os.Stat(task.StagingPath); !os.IsNotExist(err) {
-		t.Fatalf("staging path still exists: %v", err)
+	if _, err := os.Stat(task.DownloadPath); !os.IsNotExist(err) {
+		t.Fatalf("download path still exists: %v", err)
 	}
 }
 
@@ -263,7 +259,7 @@ func TestDestinationManagementRedactsSecretsAndFindsMagnetTask(t *testing.T) {
 		map[string]provider.Provider{"openlist": apiFakeProvider{}, "rclone": apiFakeProvider{}},
 		[]domain.Destination{{ID: "backup", Name: "Backup", Provider: "rclone", Remote: "backup"}},
 		"backup",
-		filepath.Join(t.TempDir(), "staging"),
+		filepath.Join(t.TempDir(), "download"),
 		1,
 	)
 	if err != nil {
@@ -271,18 +267,18 @@ func TestDestinationManagementRedactsSecretsAndFindsMagnetTask(t *testing.T) {
 	}
 	handler := NewServer(service, "secret", []string{"*"}).Handler()
 
-	createDestination := httptest.NewRequest(http.MethodPost, "/api/v1/destinations", strings.NewReader(`{"id":"openlist","name":"OpenList","provider":"openlist","endpoint":"https://files.example.test","mount":"/drive","token":"destination-secret"}`))
+	createDestination := httptest.NewRequest(http.MethodPost, "/api/v1/destinations", strings.NewReader(`{"id":"openlist","name":"OpenList","provider":"openlist","endpoint":"https://files.example.test","mount":"/drive","token":"destination-secret","proxy":"socks5://proxy-user:proxy-secret@proxy.example:1080"}`))
 	createDestination.Header.Set("Authorization", "Bearer secret")
 	createdDestination := httptest.NewRecorder()
 	handler.ServeHTTP(createdDestination, createDestination)
 	if createdDestination.Code != http.StatusCreated {
 		t.Fatalf("create destination status = %d, body = %s", createdDestination.Code, createdDestination.Body.String())
 	}
-	if strings.Contains(createdDestination.Body.String(), "destination-secret") || strings.Contains(createdDestination.Body.String(), `"token"`) {
-		t.Fatalf("destination response exposed token: %s", createdDestination.Body.String())
+	if strings.Contains(createdDestination.Body.String(), "destination-secret") || strings.Contains(createdDestination.Body.String(), `"token"`) || strings.Contains(createdDestination.Body.String(), "proxy-user") || strings.Contains(createdDestination.Body.String(), "proxy-secret") {
+		t.Fatalf("destination response exposed credentials: %s", createdDestination.Body.String())
 	}
-	if !strings.Contains(createdDestination.Body.String(), `"has_token":true`) {
-		t.Fatalf("destination response did not report stored token: %s", createdDestination.Body.String())
+	if !strings.Contains(createdDestination.Body.String(), `"has_token":true`) || !strings.Contains(createdDestination.Body.String(), `"proxy":"socks5://proxy.example:1080"`) || !strings.Contains(createdDestination.Body.String(), `"has_proxy_credentials":true`) {
+		t.Fatalf("destination response did not report redacted secrets: %s", createdDestination.Body.String())
 	}
 
 	setDefault := httptest.NewRequest(http.MethodPut, "/api/v1/destinations/openlist/default", nil)
@@ -321,7 +317,22 @@ func TestDestinationManagementRedactsSecretsAndFindsMagnetTask(t *testing.T) {
 	listDestinations.Header.Set("Authorization", "Bearer secret")
 	listed := httptest.NewRecorder()
 	handler.ServeHTTP(listed, listDestinations)
-	if strings.Contains(listed.Body.String(), "destination-secret") || strings.Contains(listed.Body.String(), `"token"`) {
-		t.Fatalf("destination list exposed token: %s", listed.Body.String())
+	if strings.Contains(listed.Body.String(), "destination-secret") || strings.Contains(listed.Body.String(), `"token"`) || strings.Contains(listed.Body.String(), "proxy-user") || strings.Contains(listed.Body.String(), "proxy-secret") {
+		t.Fatalf("destination list exposed credentials: %s", listed.Body.String())
+	}
+
+	clearProxy := httptest.NewRequest(http.MethodPut, "/api/v1/destinations/openlist", strings.NewReader(`{"name":"OpenList","provider":"openlist","endpoint":"https://files.example.test","mount":"/drive","clear_proxy":true}`))
+	clearProxy.Header.Set("Authorization", "Bearer secret")
+	cleared := httptest.NewRecorder()
+	handler.ServeHTTP(cleared, clearProxy)
+	if cleared.Code != http.StatusOK || strings.Contains(cleared.Body.String(), `"has_proxy":true`) {
+		t.Fatalf("clear proxy status = %d, body = %s", cleared.Code, cleared.Body.String())
+	}
+	storedDestination, err := taskStore.GetDestination("openlist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedDestination.Proxy != "" || storedDestination.Token != "destination-secret" {
+		t.Fatalf("cleared destination secrets = token %q, proxy %q", storedDestination.Token, storedDestination.Proxy)
 	}
 }

@@ -43,6 +43,7 @@ func TestOpenListTransferStreamsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var progress []TransferProgress
 	provider := NewOpenList(server.Client())
 	err := provider.Transfer(context.Background(), TransferRequest{
 		SourceDir:  source,
@@ -53,9 +54,15 @@ func TestOpenListTransferStreamsFiles(t *testing.T) {
 			Mount:    "/google-drive",
 			Token:    "token-value",
 		},
+		OnProgress: func(update TransferProgress) {
+			progress = append(progress, update)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(progress) < 2 || progress[0].TotalBytes != 5 || progress[0].TransferredBytes != 0 || progress[len(progress)-1].TotalBytes != 5 || progress[len(progress)-1].TransferredBytes != 5 {
+		t.Fatalf("progress updates = %#v", progress)
 	}
 }
 
@@ -128,5 +135,36 @@ func TestOpenListTransferRejectsShortUpload(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "sent 1 bytes, want 5") {
 		t.Fatalf("error = %v, want short upload error", err)
+	}
+}
+
+func TestOpenListTransferUsesConfiguredHTTPProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "openlist.invalid" || r.URL.Path != "/api/fs/put" {
+			t.Errorf("proxied URL = %s", r.URL.String())
+		}
+		if got := r.Header.Get("Proxy-Authorization"); got != "Basic cHJveHktdXNlcjpwcm94eS1wYXNz" {
+			t.Errorf("proxy authorization = %q", got)
+		}
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Errorf("read proxied body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"code":200,"message":"success"}`))
+	}))
+	defer proxy.Close()
+
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("hello"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	proxyURL := strings.Replace(proxy.URL, "http://", "http://proxy-user:proxy-pass@", 1)
+	err := NewOpenList(&http.Client{}).Transfer(context.Background(), TransferRequest{
+		SourceDir: source,
+		Destination: domain.Destination{
+			ID: "drive", Endpoint: "http://openlist.invalid", Token: "token-value", Proxy: proxyURL,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

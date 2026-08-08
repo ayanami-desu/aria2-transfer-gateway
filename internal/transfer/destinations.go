@@ -42,7 +42,7 @@ func (s *Service) CreateDestination(destination domain.Destination) (domain.Dest
 	return destination, nil
 }
 
-func (s *Service) UpdateDestination(id string, destination domain.Destination) (domain.Destination, error) {
+func (s *Service) UpdateDestination(id string, destination domain.Destination, clearProxy bool) (domain.Destination, error) {
 	id = strings.TrimSpace(id)
 	s.destinationsMu.Lock()
 	defer s.destinationsMu.Unlock()
@@ -53,6 +53,11 @@ func (s *Service) UpdateDestination(id string, destination domain.Destination) (
 	destination.ID = id
 	if strings.TrimSpace(destination.Token) == "" {
 		destination.Token = existing.Token
+	}
+	if clearProxy {
+		destination.Proxy = ""
+	} else if strings.TrimSpace(destination.Proxy) == "" {
+		destination.Proxy = existing.Proxy
 	}
 	destination, err := normalizeManagedDestination(destination)
 	if err != nil {
@@ -135,6 +140,11 @@ func normalizeManagedDestination(destination domain.Destination) (domain.Destina
 	destination.Root = strings.TrimSpace(destination.Root)
 	destination.RcloneConfig = strings.TrimSpace(destination.RcloneConfig)
 	destination.Token = strings.TrimSpace(destination.Token)
+	proxy, err := domain.NormalizeProxyURL(destination.Proxy)
+	if err != nil {
+		return domain.Destination{}, err
+	}
+	destination.Proxy = proxy
 
 	if !destinationIDPattern.MatchString(destination.ID) {
 		return domain.Destination{}, errors.New("destination id must be 1-64 letters, numbers, dots, underscores, or hyphens")

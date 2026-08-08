@@ -37,7 +37,7 @@ func TestClientAddURI(t *testing.T) {
 	defer server.Close()
 	client := NewClient(server.URL, "secret", server.Client())
 
-	gid, err := client.AddURI(context.Background(), []string{"https://example.test/file"}, "/staging/task-1", false, nil)
+	gid, err := client.AddURI(context.Background(), []string{"https://example.test/file"}, "/downloads/task-1", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestClientGetFiles(t *testing.T) {
 		if gid != "gid-1" {
 			t.Errorf("gid = %q", gid)
 		}
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"path":"/staging/task-1/file.mkv","length":"34896138","completedLength":"34896138","selected":"true"},{"path":"/staging/task-1/state.aria2","length":"0","completedLength":"0","selected":"false"}]}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"path":"/downloads/task-1/file.mkv","length":"34896138","completedLength":"34896138","selected":"true"},{"path":"/downloads/task-1/state.aria2","length":"0","completedLength":"0","selected":"false"}]}`))
 	}))
 	defer server.Close()
 
@@ -76,7 +76,7 @@ func TestClientGetFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 2 || files[0].Path != "/staging/task-1/file.mkv" || !files[0].Selected || files[1].Selected {
+	if len(files) != 2 || files[0].Path != "/downloads/task-1/file.mkv" || !files[0].Selected || files[1].Selected {
 		t.Fatalf("files = %#v", files)
 	}
 }

@@ -13,7 +13,7 @@ import (
 type Config struct {
 	ListenAddr           string              `yaml:"listen_addr"`
 	DataFile             string              `yaml:"data_file"`
-	StagingDir           string              `yaml:"staging_dir"`
+	DownloadDir          string              `yaml:"download_dir"`
 	WorkerCount          int                 `yaml:"worker_count"`
 	DefaultDestinationID string              `yaml:"default_destination_id"`
 	CORSOrigins          []string            `yaml:"cors_origins"`
@@ -47,6 +47,8 @@ type DestinationConfig struct {
 	RcloneConfigEnv string `yaml:"rclone_config_env"`
 	Token           string `yaml:"token"`
 	TokenEnv        string `yaml:"token_env"`
+	Proxy           string `yaml:"proxy"`
+	ProxyEnv        string `yaml:"proxy_env"`
 }
 
 type Runtime struct {
@@ -61,7 +63,7 @@ func Default() Config {
 	return Config{
 		ListenAddr:  "127.0.0.1:8787",
 		DataFile:    "./data/tasks.db",
-		StagingDir:  "./data/staging",
+		DownloadDir: "./data/downloads",
 		WorkerCount: 2,
 		CORSOrigins: []string{"*"},
 		Aria2: Aria2Config{
@@ -114,8 +116,8 @@ func (c *Config) applyDefaults() {
 	if c.DataFile == "" {
 		c.DataFile = defaults.DataFile
 	}
-	if c.StagingDir == "" {
-		c.StagingDir = defaults.StagingDir
+	if c.DownloadDir == "" {
+		c.DownloadDir = defaults.DownloadDir
 	}
 	if c.WorkerCount <= 0 {
 		c.WorkerCount = defaults.WorkerCount
@@ -160,6 +162,14 @@ func (c Config) Resolve() (Runtime, error) {
 		if token == "" && item.TokenEnv != "" {
 			token = os.Getenv(item.TokenEnv)
 		}
+		proxy := item.Proxy
+		if proxy == "" && item.ProxyEnv != "" {
+			proxy = os.Getenv(item.ProxyEnv)
+		}
+		proxy, err := domain.NormalizeProxyURL(proxy)
+		if err != nil {
+			return Runtime{}, fmt.Errorf("destination %q proxy: %w", item.ID, err)
+		}
 		destinations = append(destinations, domain.Destination{
 			ID:           item.ID,
 			Name:         item.Name,
@@ -170,6 +180,7 @@ func (c Config) Resolve() (Runtime, error) {
 			Root:         item.Root,
 			RcloneConfig: rcloneConfig,
 			Token:        token,
+			Proxy:        proxy,
 		})
 	}
 	if defaultDestinationID != "" {

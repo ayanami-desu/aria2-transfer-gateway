@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -87,19 +88,24 @@ type destinationRequest struct {
 	Root         string `json:"root"`
 	RcloneConfig string `json:"rclone_config"`
 	Token        string `json:"token"`
+	Proxy        string `json:"proxy"`
+	ClearProxy   bool   `json:"clear_proxy"`
 }
 
 type destinationView struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Provider     string `json:"provider"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	Mount        string `json:"mount,omitempty"`
-	Remote       string `json:"remote,omitempty"`
-	Root         string `json:"root,omitempty"`
-	RcloneConfig string `json:"rclone_config,omitempty"`
-	HasToken     bool   `json:"has_token"`
-	IsDefault    bool   `json:"is_default"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Provider            string `json:"provider"`
+	Endpoint            string `json:"endpoint,omitempty"`
+	Mount               string `json:"mount,omitempty"`
+	Remote              string `json:"remote,omitempty"`
+	Root                string `json:"root,omitempty"`
+	RcloneConfig        string `json:"rclone_config,omitempty"`
+	HasToken            bool   `json:"has_token"`
+	Proxy               string `json:"proxy,omitempty"`
+	HasProxy            bool   `json:"has_proxy"`
+	HasProxyCredentials bool   `json:"has_proxy_credentials"`
+	IsDefault           bool   `json:"is_default"`
 }
 
 func NewServer(service *transfer.Service, token string, corsOrigins []string) *Server {
@@ -205,7 +211,7 @@ func (s *Server) handleDestinationPath(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		destination, err := s.service.UpdateDestination(id, request.destination())
+		destination, err := s.service.UpdateDestination(id, request.destination(), request.ClearProxy)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -228,17 +234,29 @@ func (request destinationRequest) destination() domain.Destination {
 	return domain.Destination{
 		ID: request.ID, Name: request.Name, Provider: request.Provider,
 		Endpoint: request.Endpoint, Mount: request.Mount, Remote: request.Remote,
-		Root: request.Root, RcloneConfig: request.RcloneConfig, Token: request.Token,
+		Root: request.Root, RcloneConfig: request.RcloneConfig, Token: request.Token, Proxy: request.Proxy,
 	}
 }
 
 func (s *Server) viewDestination(destination domain.Destination) destinationView {
+	proxy, hasProxyCredentials := publicProxyURL(destination.Proxy)
 	return destinationView{
 		ID: destination.ID, Name: destination.Name, Provider: destination.Provider,
 		Endpoint: destination.Endpoint, Mount: destination.Mount, Remote: destination.Remote,
 		Root: destination.Root, RcloneConfig: destination.RcloneConfig,
+		Proxy: proxy, HasProxy: destination.Proxy != "", HasProxyCredentials: hasProxyCredentials,
 		HasToken: destination.Token != "", IsDefault: destination.ID == s.service.DefaultDestinationID(),
 	}
+}
+
+func publicProxyURL(value string) (string, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	hasCredentials := parsed.User != nil
+	parsed.User = nil
+	return parsed.String(), hasCredentials
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

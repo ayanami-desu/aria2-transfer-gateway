@@ -10,12 +10,13 @@ func TestLoadYAML(t *testing.T) {
 	t.Setenv("TEST_GATEWAY_API_TOKEN", "api-token")
 	t.Setenv("TEST_ARIA2_RPC_SECRET", "aria2-secret")
 	t.Setenv("TEST_OPENLIST_TOKEN", "openlist-token")
+	t.Setenv("TEST_TRANSFER_PROXY", "socks5://proxy.example:1080")
 	t.Setenv("GATEWAY_CORS_ORIGINS", "")
 
 	path := filepath.Join(t.TempDir(), "gateway.yaml")
 	data := []byte(`listen_addr: 0.0.0.0:9090
 data_file: /tmp/tasks.db
-staging_dir: /tmp/staging
+download_dir: /tmp/downloads
 worker_count: 4
 default_destination_id: files
 cors_origins:
@@ -32,6 +33,7 @@ destinations:
     endpoint: http://openlist.test
     mount: /files
     token_env: TEST_OPENLIST_TOKEN
+    proxy_env: TEST_TRANSFER_PROXY
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -41,7 +43,7 @@ destinations:
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.ListenAddr != "0.0.0.0:9090" || cfg.WorkerCount != 4 {
+	if cfg.ListenAddr != "0.0.0.0:9090" || cfg.DownloadDir != "/tmp/downloads" || cfg.WorkerCount != 4 {
 		t.Fatalf("config fields = %#v", cfg)
 	}
 	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "https://example.test" {
@@ -58,7 +60,7 @@ destinations:
 	if runtime.DefaultDestinationID != "files" {
 		t.Fatalf("default destination = %q", runtime.DefaultDestinationID)
 	}
-	if len(runtime.Destinations) != 1 || runtime.Destinations[0].Token != "openlist-token" {
+	if len(runtime.Destinations) != 1 || runtime.Destinations[0].Token != "openlist-token" || runtime.Destinations[0].Proxy != "socks5://proxy.example:1080" {
 		t.Fatalf("resolved destinations = %#v", runtime.Destinations)
 	}
 }
@@ -66,6 +68,9 @@ destinations:
 func TestDefaultUsesSQLiteDatabase(t *testing.T) {
 	if got := Default().DataFile; got != "./data/tasks.db" {
 		t.Fatalf("default data file = %q, want SQLite database path", got)
+	}
+	if got := Default().DownloadDir; got != "./data/downloads" {
+		t.Fatalf("default download directory = %q", got)
 	}
 }
 

@@ -18,7 +18,6 @@ services:
     volumes:
       - "${ARIA2_CONFIG_DIR:-./runtime/aria2/config}:/config"
       - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
-      - "${ARIA2_STAGING_DIR:-./runtime/aria2/staging}:/staging"
       - ./hooks:/hooks:ro
       - ./hooks/aria2-init-hooks.sh:/etc/cont-init.d/29-gateway-hooks:ro
 
@@ -40,7 +39,7 @@ services:
     volumes:
       - ./deploy/gateway.yaml:/app/gateway.yaml:ro
       - "${GATEWAY_DATA_DIR:-./runtime/gateway}:/data"
-      - "${ARIA2_STAGING_DIR:-./runtime/aria2/staging}:/staging"
+      - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
       - "${RCLONE_CONFIG_DIR:-./runtime/rclone}:/rclone"
 
   ariang:

@@ -67,11 +67,35 @@ func (p *Rclone) Transfer(ctx context.Context, request TransferRequest) error {
 		args = append(args, "--config", request.Destination.RcloneConfig)
 	}
 	cmd := exec.CommandContext(ctx, p.Binary, args...)
+	if request.Destination.Proxy != "" {
+		cmd.Env = rcloneProxyEnvironment(os.Environ(), request.Destination.Proxy)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("rclone copy failed: %w: %s", err, truncateOutput(output))
 	}
 	return nil
+}
+
+func rcloneProxyEnvironment(environment []string, proxy string) []string {
+	proxyKeys := map[string]struct{}{
+		"http_proxy":  {},
+		"https_proxy": {},
+	}
+	result := make([]string, 0, len(environment)+4)
+	for _, value := range environment {
+		key, _, _ := strings.Cut(value, "=")
+		if _, replace := proxyKeys[strings.ToLower(key)]; !replace {
+			result = append(result, value)
+		}
+	}
+	result = append(result,
+		"http_proxy="+proxy,
+		"https_proxy="+proxy,
+		"HTTP_PROXY="+proxy,
+		"HTTPS_PROXY="+proxy,
+	)
+	return result
 }
 
 func joinRemotePath(root, target string) string {

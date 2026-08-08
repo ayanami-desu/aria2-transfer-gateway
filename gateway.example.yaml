@@ -1,6 +1,6 @@
 listen_addr: 127.0.0.1:8787
 data_file: ./data/tasks.db
-staging_dir: /aria2/staging
+download_dir: /downloads
 worker_count: 2
 default_destination_id: google-drive
 cors_origins:
@@ -17,9 +17,11 @@ destinations:
     endpoint: http://127.0.0.1:5244
     mount: /google-drive
     token_env: OPENLIST_TOKEN
+    # proxy_env: TRANSFER_PROXY
   - id: onedrive-family
     name: OneDrive Family
     provider: rclone
     remote: onedrive-family
     root: ""
     rclone_config: /aria2/aria2-config/rclone.conf
+    # proxy_env: TRANSFER_PROXY
