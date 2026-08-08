@@ -143,33 +143,6 @@ func TestServiceDownloadsDirectlyIntoDownloadRoot(t *testing.T) {
 	}
 }
 
-func TestServiceRebasesMigratedDownloadPath(t *testing.T) {
-	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer taskStore.Close()
-	now := time.Now().UTC()
-	legacy := domain.Task{ID: "legacy-task", DownloadPath: "/staging/legacy-task", Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now}
-	if err := taskStore.Create(legacy); err != nil {
-		t.Fatal(err)
-	}
-	downloadRoot := filepath.Join(t.TempDir(), "downloads")
-	expected := filepath.Join(downloadRoot, legacy.ID)
-	if err := os.MkdirAll(expected, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewService(taskStore, fakeDownloader{}, map[string]provider.Provider{}, nil, "", downloadRoot, 1); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := taskStore.Get(legacy.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if migrated.DownloadPath != expected {
-		t.Fatalf("migrated download path = %q, want %q", migrated.DownloadPath, expected)
-	}
-}
 func TestServiceRetriesAnyTaskStatus(t *testing.T) {
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {

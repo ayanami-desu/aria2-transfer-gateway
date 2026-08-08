@@ -136,9 +136,6 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 			return nil, fmt.Errorf("default destination %q not found", defaultDestinationID)
 		}
 	}
-	if err := migrateTaskDownloadPaths(taskStore, absoluteDownloadRoot); err != nil {
-		return nil, err
-	}
 	return &Service{
 		store:                taskStore,
 		downloader:           downloader,
@@ -150,32 +147,6 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 		workerCount:          workerCount,
 		taskRuns:             make(map[string]*taskRun),
 	}, nil
-}
-
-func migrateTaskDownloadPaths(taskStore *store.Store, downloadRoot string) error {
-	for _, task := range taskStore.List() {
-		expected := filepath.Join(downloadRoot, task.ID)
-		if filepath.Clean(task.DownloadPath) == filepath.Clean(expected) {
-			continue
-		}
-		info, err := os.Stat(expected)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("inspect migrated download directory for task %q: %w", task.ID, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("migrated download path for task %q is not a directory", task.ID)
-		}
-		if _, err := taskStore.Update(task.ID, func(current *domain.Task) error {
-			current.DownloadPath = expected
-			return nil
-		}); err != nil {
-			return fmt.Errorf("migrate download path for task %q: %w", task.ID, err)
-		}
-	}
-	return nil
 }
 
 func (s *Service) Start(ctx context.Context) {

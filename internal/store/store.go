@@ -270,9 +270,6 @@ CREATE TABLE IF NOT EXISTS gateway_settings (
 `); err != nil {
 		return fmt.Errorf("initialize SQLite task store: %w", err)
 	}
-	if err := renameSQLiteColumn(s.db, "tasks", "staging_path", "download_path"); err != nil {
-		return err
-	}
 	if err := ensureSQLiteColumns(s.db, "destinations", map[string]string{"proxy": "TEXT NOT NULL DEFAULT ''"}); err != nil {
 		return err
 	}
@@ -325,23 +322,6 @@ func ensureSQLiteColumns(db *sql.DB, table string, columns map[string]string) er
 		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition); err != nil {
 			return fmt.Errorf("add %s.%s column: %w", table, name, err)
 		}
-	}
-	return nil
-}
-
-func renameSQLiteColumn(db *sql.DB, table, oldName, newName string) error {
-	existing, err := sqliteColumnNames(db, table)
-	if err != nil {
-		return err
-	}
-	if _, found := existing[newName]; found {
-		return nil
-	}
-	if _, found := existing[oldName]; !found {
-		return nil
-	}
-	if _, err := db.Exec(`ALTER TABLE ` + table + ` RENAME COLUMN ` + oldName + ` TO ` + newName); err != nil {
-		return fmt.Errorf("rename %s.%s to %s: %w", table, oldName, newName, err)
 	}
 	return nil
 }

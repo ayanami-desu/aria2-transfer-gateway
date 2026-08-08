@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -149,57 +148,41 @@ func TestStorePersistsDestinationSettings(t *testing.T) {
 	}
 }
 
-func TestStoreMigratesLegacySchema(t *testing.T) {
+func TestStorePersistsCurrentSchemaFields(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "tasks.db")
-	database, err := sql.Open("sqlite", file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Exec(`
-CREATE TABLE destinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL, endpoint TEXT NOT NULL DEFAULT '', mount TEXT NOT NULL DEFAULT '', remote TEXT NOT NULL DEFAULT '', root TEXT NOT NULL DEFAULT '', rclone_config TEXT NOT NULL DEFAULT '', token TEXT NOT NULL DEFAULT '');
-CREATE TABLE tasks (id TEXT PRIMARY KEY, gid TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', urls TEXT, content TEXT NOT NULL DEFAULT '', options TEXT, destination_id TEXT NOT NULL DEFAULT '', target_path TEXT NOT NULL DEFAULT '/', staging_path TEXT NOT NULL DEFAULT '', final_files TEXT, status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', retry_count INTEGER NOT NULL DEFAULT 0, cleanup INTEGER NOT NULL DEFAULT 0, pause INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT);
-`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Exec(`INSERT INTO tasks (id, staging_path, created_at, updated_at) VALUES ('legacy-path', '/staging/legacy-path', '2026-08-08T00:00:00Z', '2026-08-08T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
 	taskStore, err := Open(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer taskStore.Close()
-	legacyTask, err := taskStore.Get("legacy-path")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacyTask.DownloadPath != "/staging/legacy-path" {
-		t.Fatalf("migrated download path = %q", legacyTask.DownloadPath)
-	}
 	destination := domain.Destination{ID: "proxy", Name: "Proxy", Provider: "rclone", Remote: "backup", Proxy: "https://proxy.example:8443"}
 	if err := taskStore.CreateDestination(destination); err != nil {
 		t.Fatal(err)
-	}
-	stored, err := taskStore.GetDestination(destination.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Proxy != destination.Proxy {
-		t.Fatalf("migrated proxy = %q, want %q", stored.Proxy, destination.Proxy)
 	}
 	now := time.Now().UTC()
 	task := domain.Task{ID: "progress", GID: "gid-progress", Type: "urls", DestinationID: destination.ID, TargetPath: "/", Status: domain.StatusTransferring, TransferTotalBytes: 100, TransferredBytes: 40, TransferSpeed: 10, TransferUpdatedAt: now, CreatedAt: now, UpdatedAt: now}
 	if err := taskStore.Create(task); err != nil {
 		t.Fatal(err)
 	}
-	storedTask, err := taskStore.Get(task.ID)
+	if err := taskStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	stored, err := reopened.GetDestination(destination.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Proxy != destination.Proxy {
+		t.Fatalf("stored proxy = %q, want %q", stored.Proxy, destination.Proxy)
+	}
+	storedTask, err := reopened.Get(task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if storedTask.TransferTotalBytes != 100 || storedTask.TransferredBytes != 40 || storedTask.TransferSpeed != 10 || !storedTask.TransferUpdatedAt.Equal(now) {
-		t.Fatalf("migrated task progress = %#v", storedTask)
+		t.Fatalf("stored task progress = %#v", storedTask)
 	}
 }
