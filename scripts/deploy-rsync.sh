@@ -56,7 +56,6 @@ rsync -azP \
   -e "ssh -p $deploy_port" \
   --exclude '/.git/' \
   --exclude '/.codegraph/' \
-  --exclude '/third_party/ariang/.git/' \
   --exclude '/.env.local' \
   --exclude '/runtime/' \
   --exclude '/data/' \

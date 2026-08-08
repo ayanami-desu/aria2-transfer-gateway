@@ -1,0 +1,124 @@
+<section class="content gateway-task-page">
+    <div class="box box-primary">
+        <div class="box-header with-border">
+            <h3 class="box-title"><i class="fa fa-tasks"></i> <span translate>Task Management</span></h3>
+            <div class="box-tools pull-right">
+                <button type="button" class="btn btn-default btn-sm" title="{{'Refresh' | translate}}" ng-click="loadTasks()" ng-disabled="!gatewayEnabled">
+                    <i class="fa fa-refresh"></i> <span translate>Refresh</span>
+                </button>
+            </div>
+        </div>
+        <div class="box-body" ng-if="gatewayEnabled">
+            <form class="form-inline gateway-task-filters" ng-submit="loadTasks()">
+                <div class="form-group">
+                    <label for="gateway-task-status" translate>Status</label>
+                    <select id="gateway-task-status" class="form-control" ng-model="filters.status"
+                            ng-options="status.value as (status.label | translate) for status in statuses"
+                            ng-change="loadTasks()"></select>
+                </div>
+                <div class="form-group">
+                    <label for="gateway-task-destination" translate>Destination</label>
+                    <select id="gateway-task-destination" class="form-control" ng-model="filters.destinationId"
+                            ng-options="destination.id as destination.name for destination in destinations"
+                            ng-change="loadTasks()">
+                        <option value="" translate>All Destinations</option>
+                    </select>
+                </div>
+                <div class="form-group gateway-task-query">
+                    <label for="gateway-task-query" class="sr-only" translate>Keyword</label>
+                    <input id="gateway-task-query" type="search" class="form-control"
+                           ng-model="filters.query" ng-placeholder="('Keyword' | translate)" />
+                </div>
+                <button type="submit" class="btn btn-primary"><i class="fa fa-filter"></i> <span translate>Filter</span></button>
+                <button type="button" class="btn btn-default" ng-click="resetFilters()"><i class="fa fa-undo"></i> <span translate>Reset</span></button>
+            </form>
+
+            <div class="gateway-task-toolbar">
+                <select class="form-control gateway-task-retry-mode" ng-model="retryMode"
+                        ng-options="mode.value as (mode.label | translate) for mode in retryModes"
+                        aria-label="{{'Retry Mode' | translate}}"></select>
+                <button type="button" class="btn btn-warning" ng-click="retrySelected()" ng-disabled="!hasSelectedRetryableTask()">
+                    <i class="fa fa-refresh"></i> <span translate>Retry Selected Tasks</span>
+                </button>
+                <button type="button" class="btn btn-danger" ng-click="deleteSelected()" ng-disabled="selectedTaskCount() < 1">
+                    <i class="fa fa-trash"></i> <span translate>Delete Selected Tasks</span>
+                </button>
+                <button type="button" class="btn btn-default" ng-click="toggleAll()" ng-disabled="tasks.length < 1">
+                    <i class="fa fa-check-square-o"></i>
+                    <span ng-if="!isAllSelected()" translate>Select All</span>
+                    <span ng-if="isAllSelected()" translate>Select None</span>
+                </button>
+                <span class="gateway-task-selection text-muted" ng-if="selectedTaskCount() > 0">
+                    <span ng-bind="selectedTaskCount()"></span> <span translate>Selected Tasks</span>
+                </span>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-hover gateway-task-table">
+                    <thead>
+                        <tr>
+                            <th class="gateway-task-checkbox"><input type="checkbox" ng-checked="isAllSelected()" ng-click="toggleAll()" ng-disabled="tasks.length < 1" aria-label="{{'Select All' | translate}}" /></th>
+                            <th translate>Task ID</th>
+                            <th translate>Task Status</th>
+                            <th translate>Destination</th>
+                            <th translate>Transfer Path</th>
+                            <th translate>Retry Count</th>
+                            <th translate>Created At</th>
+                            <th translate>Updated At</th>
+                            <th translate>Operations</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr ng-repeat="task in tasks track by task.id">
+                            <td class="gateway-task-checkbox" data-label=""><input type="checkbox" ng-model="selected[task.id]" aria-label="{{'Task ID' | translate}}" /></td>
+                            <td class="gateway-task-primary" data-label="{{'Task ID' | translate}}">
+                                <div class="gateway-task-primary-content">
+                                    <div class="gateway-task-id" ng-bind="task.id"></div>
+                                    <div class="gateway-task-file-name" ng-if="task.file_names && task.file_names.length">
+                                        <i class="fa fa-file-o"></i> <span ng-bind="task.file_names.join(', ')"></span>
+                                    </div>
+                                    <div class="gateway-task-url text-muted" ng-if="task.urls && task.urls.length" ng-bind="task.urls[0]" title="{{task.urls[0]}}"></div>
+                                    <button type="button" class="btn btn-xs btn-default gateway-task-magnet-copy" ng-if="isMagnetTask(task)" ng-click="copyMagnet(task)" title="{{'Copy Magnet Link' | translate}}">
+                                        <i class="fa fa-magnet"></i> <span translate>Copy Magnet Link</span>
+                                    </button>
+                                </div>
+                            </td>
+                            <td data-label="{{'Task Status' | translate}}">
+                                <div class="gateway-task-status-content">
+                                    <span class="label gateway-task-status" ng-class="{'label-success': task.status === 'completed', 'label-danger': task.status === 'failed', 'label-primary': task.status === 'downloading' || task.status === 'transferring', 'label-warning': task.status === 'queued' || task.status === 'transfer_pending'}" ng-bind="statusLabel(task.status) | translate"></span>
+                                    <div class="progress gateway-transfer-progress" ng-if="task.transfer_total_bytes > 0">
+                                        <div class="progress-bar" ng-class="{'progress-bar-success': task.status === 'completed', 'progress-bar-danger': task.status === 'failed', 'progress-bar-info': task.status !== 'completed' && task.status !== 'failed'}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{task.transfer_progress}}" ng-style="{'width': task.transfer_progress + '%'}"></div>
+                                    </div>
+                                    <div class="gateway-transfer-progress-text" ng-if="task.transfer_total_bytes > 0">
+                                        <span ng-bind="(task.transferred_bytes | readableVolume) + ' / ' + (task.transfer_total_bytes | readableVolume) + ' (' + task.transfer_progress + '%)'"></span>
+                                        <span ng-if="task.status === 'transferring' && task.transfer_speed > 0" ng-bind="' @ ' + (task.transfer_speed | readableVolume) + '/s'"></span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td data-label="{{'Destination' | translate}}" ng-bind="task.destination || task.destination_id"></td>
+                            <td data-label="{{'Transfer Path' | translate}}" ng-bind="task.target_path"></td>
+                            <td data-label="{{'Retry Count' | translate}}" ng-bind="task.retry_count"></td>
+                            <td data-label="{{'Created At' | translate}}" ng-bind="task.created_at | date:'yyyy-MM-dd HH:mm:ss'"></td>
+                            <td data-label="{{'Updated At' | translate}}">
+                                <span ng-bind="task.updated_at | date:'yyyy-MM-dd HH:mm:ss'"></span>
+                                <div class="gateway-task-error" ng-if="task.error" ng-bind="task.error" title="{{task.error}}"></div>
+                            </td>
+                            <td class="gateway-task-actions" data-label="{{'Operations' | translate}}">
+                                <button type="button" class="btn btn-xs btn-warning" ng-if="isRetryable(task)" ng-click="retryTask(task)">
+                                    <i class="fa fa-refresh"></i> <span translate>Retry</span>
+                                </button>
+                                <button type="button" class="btn btn-xs btn-danger" ng-click="deleteTask(task)">
+                                    <i class="fa fa-trash"></i> <span translate>Delete</span>
+                                </button>
+                            </td>
+                        </tr>
+                        <tr class="gateway-task-empty" ng-if="tasks.length < 1">
+                            <td colspan="9" class="text-center text-muted" translate>No gateway tasks found.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="box-body text-muted" ng-if="!gatewayEnabled" translate>Gateway is disabled.</div>
+    </div>
+</section>
