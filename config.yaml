@@ -5,7 +5,7 @@ worker_count: 2
 cors_origins:
   - http://127.0.0.1:6880
 api:
-  token_env: GATEWAY_API_TOKEN
+  gateway_secret: GATEWAY_API_TOKEN
 aria2:
   endpoint: http://127.0.0.1:6800/jsonrpc
-  secret_env: ARIA2_RPC_SECRET
+  aria_rpc_secret: ARIA2_RPC_SECRET

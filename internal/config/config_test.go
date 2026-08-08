@@ -25,10 +25,10 @@ destinations:
 cors_origins:
   - https://example.test
 api:
-  token_env: TEST_GATEWAY_API_TOKEN
+  gateway_secret: TEST_GATEWAY_API_TOKEN
 aria2:
   endpoint: http://aria2.test/jsonrpc
-  secret_env: TEST_ARIA2_RPC_SECRET
+  aria_rpc_secret: TEST_ARIA2_RPC_SECRET
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestDefaultConfigFields(t *testing.T) {
 	if defaults.DataFile != "./data/tasks.db" || defaults.DownloadDir != "./data/downloads" || defaults.WorkerCount != 2 {
 		t.Fatalf("default config = %#v", defaults)
 	}
-	if defaults.API.TokenEnv != "GATEWAY_API_TOKEN" || defaults.Aria2.Endpoint != "http://127.0.0.1:6800/jsonrpc" || defaults.Aria2.SecretEnv != "ARIA2_RPC_SECRET" {
+	if defaults.API.GatewaySecret != "GATEWAY_API_TOKEN" || defaults.Aria2.Endpoint != "http://127.0.0.1:6800/jsonrpc" || defaults.Aria2.AriaRPCSecret != "ARIA2_RPC_SECRET" {
 		t.Fatalf("default integrations = %#v", defaults)
 	}
 }

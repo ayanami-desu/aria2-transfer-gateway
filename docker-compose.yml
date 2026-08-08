@@ -14,7 +14,7 @@ services:
       LISTEN_PORT: "6888"
       UPDATE_TRACKERS: "true"
       GATEWAY_URL: "http://127.0.0.1:8787"
-      GATEWAY_API_TOKEN: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+      GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
     volumes:
       - "${ARIA2_CONFIG_DIR:-./runtime/aria2/config}:/config"
       - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
@@ -31,7 +31,7 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
-      GATEWAY_API_TOKEN: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
+      GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
       GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:?set GATEWAY_CORS_ORIGINS}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro

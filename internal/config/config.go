@@ -19,16 +19,16 @@ type Config struct {
 }
 
 type APIConfig struct {
-	Token    string `yaml:"token"`
-	TokenEnv string `yaml:"token_env"`
+	Token         string `yaml:"token"`
+	GatewaySecret string `yaml:"gateway_secret"`
 }
 
 type Aria2Config struct {
-	Endpoint     string `yaml:"endpoint"`
-	Secret       string `yaml:"secret"`
-	SecretEnv    string `yaml:"secret_env"`
-	CompleteHook string `yaml:"complete_hook"`
-	StoppedHook  string `yaml:"stopped_hook"`
+	Endpoint      string `yaml:"endpoint"`
+	Secret        string `yaml:"secret"`
+	AriaRPCSecret string `yaml:"aria_rpc_secret"`
+	CompleteHook  string `yaml:"complete_hook"`
+	StoppedHook   string `yaml:"stopped_hook"`
 }
 
 type Runtime struct {
@@ -45,11 +45,11 @@ func Default() Config {
 		WorkerCount: 2,
 		CORSOrigins: []string{"*"},
 		API: APIConfig{
-			TokenEnv: "GATEWAY_API_TOKEN",
+			GatewaySecret: "GATEWAY_API_TOKEN",
 		},
 		Aria2: Aria2Config{
-			Endpoint:  "http://127.0.0.1:6800/jsonrpc",
-			SecretEnv: "ARIA2_RPC_SECRET",
+			Endpoint:      "http://127.0.0.1:6800/jsonrpc",
+			AriaRPCSecret: "ARIA2_RPC_SECRET",
 		},
 	}
 }
@@ -105,25 +105,25 @@ func (c *Config) applyDefaults() {
 	if len(c.CORSOrigins) == 0 {
 		c.CORSOrigins = defaults.CORSOrigins
 	}
-	if c.API.TokenEnv == "" && c.API.Token == "" {
-		c.API.TokenEnv = defaults.API.TokenEnv
+	if c.API.GatewaySecret == "" && c.API.Token == "" {
+		c.API.GatewaySecret = defaults.API.GatewaySecret
 	}
 	if c.Aria2.Endpoint == "" {
 		c.Aria2.Endpoint = defaults.Aria2.Endpoint
 	}
-	if c.Aria2.SecretEnv == "" && c.Aria2.Secret == "" {
-		c.Aria2.SecretEnv = defaults.Aria2.SecretEnv
+	if c.Aria2.AriaRPCSecret == "" && c.Aria2.Secret == "" {
+		c.Aria2.AriaRPCSecret = defaults.Aria2.AriaRPCSecret
 	}
 }
 
 func (c Config) Resolve() (Runtime, error) {
 	apiToken := c.API.Token
-	if apiToken == "" && c.API.TokenEnv != "" {
-		apiToken = os.Getenv(c.API.TokenEnv)
+	if apiToken == "" && c.API.GatewaySecret != "" {
+		apiToken = os.Getenv(c.API.GatewaySecret)
 	}
 	aria2Secret := c.Aria2.Secret
-	if aria2Secret == "" && c.Aria2.SecretEnv != "" {
-		aria2Secret = os.Getenv(c.Aria2.SecretEnv)
+	if aria2Secret == "" && c.Aria2.AriaRPCSecret != "" {
+		aria2Secret = os.Getenv(c.Aria2.AriaRPCSecret)
 	}
 	return Runtime{
 		Config:      c,
