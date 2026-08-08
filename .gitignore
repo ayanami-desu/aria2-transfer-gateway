@@ -8,3 +8,5 @@
 !.env.example
 .codegraph/
 gateway.yaml
+
+AGENTS.md
