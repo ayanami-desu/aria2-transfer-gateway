@@ -83,5 +83,5 @@ fi
 login_ghcr
 printf 'pulling and restarting %s on %s:%s\n' "$services" "$deploy_host" "$deploy_path"
 ssh -p "$deploy_port" "$deploy_host" \
-  "cd '$deploy_path' && docker compose pull$services && docker compose up -d --no-build --force-recreate$services"
+  "cd '$deploy_path' && ./deploy/prepare-runtime.sh && docker compose pull$services && docker compose up -d --no-build --force-recreate$services"
 printf 'services restarted from GHCR images\n'
