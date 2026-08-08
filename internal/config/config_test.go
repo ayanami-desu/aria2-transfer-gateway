@@ -9,16 +9,19 @@ import (
 func TestLoadYAML(t *testing.T) {
 	t.Setenv("TEST_GATEWAY_API_TOKEN", "api-token")
 	t.Setenv("TEST_ARIA2_RPC_SECRET", "aria2-secret")
-	t.Setenv("TEST_OPENLIST_TOKEN", "openlist-token")
-	t.Setenv("TEST_TRANSFER_PROXY", "socks5://proxy.example:1080")
 	t.Setenv("GATEWAY_CORS_ORIGINS", "")
 
-	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`listen_addr: 0.0.0.0:9090
 data_file: /tmp/tasks.db
 download_dir: /tmp/downloads
 worker_count: 4
-default_destination_id: files
+default_destination_id: ignored
+destinations:
+  - id: ignored
+    name: Ignored
+    provider: rclone
+    remote: ignored
 cors_origins:
   - https://example.test
 api:
@@ -26,14 +29,6 @@ api:
 aria2:
   endpoint: http://aria2.test/jsonrpc
   secret_env: TEST_ARIA2_RPC_SECRET
-destinations:
-  - id: files
-    name: Files
-    provider: openlist
-    endpoint: http://openlist.test
-    mount: /files
-    token_env: TEST_OPENLIST_TOKEN
-    proxy_env: TEST_TRANSFER_PROXY
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -57,27 +52,36 @@ destinations:
 	if runtime.APIToken != "api-token" || runtime.Aria2Secret != "aria2-secret" {
 		t.Fatalf("resolved secrets = %#v", runtime)
 	}
-	if runtime.DefaultDestinationID != "files" {
-		t.Fatalf("default destination = %q", runtime.DefaultDestinationID)
+}
+
+func TestDefaultConfigFields(t *testing.T) {
+	defaults := Default()
+	if defaults.DataFile != "./data/tasks.db" || defaults.DownloadDir != "./data/downloads" || defaults.WorkerCount != 2 {
+		t.Fatalf("default config = %#v", defaults)
 	}
-	if len(runtime.Destinations) != 1 || runtime.Destinations[0].Token != "openlist-token" || runtime.Destinations[0].Proxy != "socks5://proxy.example:1080" {
-		t.Fatalf("resolved destinations = %#v", runtime.Destinations)
+	if defaults.API.TokenEnv != "GATEWAY_API_TOKEN" || defaults.Aria2.Endpoint != "http://127.0.0.1:6800/jsonrpc" || defaults.Aria2.SecretEnv != "ARIA2_RPC_SECRET" {
+		t.Fatalf("default integrations = %#v", defaults)
 	}
 }
 
-func TestDefaultUsesSQLiteDatabase(t *testing.T) {
-	if got := Default().DataFile; got != "./data/tasks.db" {
-		t.Fatalf("default data file = %q, want SQLite database path", got)
+func TestLoadMissingFileUsesCodeDefaults(t *testing.T) {
+	t.Setenv("GATEWAY_CORS_ORIGINS", "https://environment.example")
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
-	if got := Default().DownloadDir; got != "./data/downloads" {
-		t.Fatalf("default download directory = %q", got)
+	if cfg.ListenAddr != "127.0.0.1:8787" || cfg.DataFile != "./data/tasks.db" || cfg.DownloadDir != "./data/downloads" || cfg.WorkerCount != 2 {
+		t.Fatalf("missing-file defaults = %#v", cfg)
+	}
+	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "https://environment.example" {
+		t.Fatalf("missing-file CORS origins = %#v", cfg.CORSOrigins)
 	}
 }
 
 func TestLoadUsesCORSOriginsFromEnvironment(t *testing.T) {
 	t.Setenv("GATEWAY_CORS_ORIGINS", " https://public.example , http://localhost:6880, ")
 
-	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("cors_origins:\n  - https://yaml.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +96,7 @@ func TestLoadUsesCORSOriginsFromEnvironment(t *testing.T) {
 }
 
 func TestLoadRejectsMalformedYAML(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("listen_addr: ["), 0o600); err != nil {
 		t.Fatal(err)
 	}

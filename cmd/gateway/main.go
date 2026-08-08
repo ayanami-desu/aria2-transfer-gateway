@@ -20,7 +20,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "gateway.yaml", "gateway configuration file")
+	configPath := flag.String("config", "config.yaml", "gateway configuration file")
 	addrOverride := flag.String("addr", "", "override HTTP listen address")
 	flag.Parse()
 
@@ -50,8 +50,8 @@ func main() {
 		taskStore,
 		downloader,
 		providers,
-		runtime.Destinations,
-		runtime.DefaultDestinationID,
+		nil,
+		"",
 		runtime.Config.DownloadDir,
 		runtime.Config.WorkerCount,
 	)

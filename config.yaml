@@ -1,0 +1,11 @@
+listen_addr: 127.0.0.1:8787
+data_file: /data/tasks.db
+download_dir: /downloads
+worker_count: 2
+cors_origins:
+  - http://127.0.0.1:6880
+api:
+  token_env: GATEWAY_API_TOKEN
+aria2:
+  endpoint: http://127.0.0.1:6800/jsonrpc
+  secret_env: ARIA2_RPC_SECRET

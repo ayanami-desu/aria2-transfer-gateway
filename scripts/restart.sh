@@ -47,8 +47,8 @@ check_runtime_files() {
     printf '.env is required at %s\n' "$deploy_path" >&2
     exit 64
   fi
-  if [ ! -f "$deploy_path/deploy/gateway.yaml" ]; then
-    printf 'deploy/gateway.yaml is required at %s\n' "$deploy_path" >&2
+  if [ ! -f "$deploy_path/config.yaml" ]; then
+    printf 'config.yaml is required at %s\n' "$deploy_path" >&2
     exit 64
   fi
 }
@@ -104,7 +104,7 @@ git -C '$deploy_path' fetch --prune origin '$branch'
 git -C '$deploy_path' checkout -B '$branch' 'origin/$branch'
 git -C '$deploy_path' reset --hard 'origin/$branch'
 test -f '$deploy_path/.env'
-test -f '$deploy_path/deploy/gateway.yaml'
+test -f '$deploy_path/config.yaml'
 cd '$deploy_path'
 ./deploy/prepare-runtime.sh
 docker compose pull
