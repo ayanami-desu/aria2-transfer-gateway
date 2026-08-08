@@ -2,13 +2,15 @@
 set -eu
 
 usage() {
-  printf 'usage: DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s\n' "$0" >&2
+  printf 'usage: GHCR_USERNAME=... GHCR_TOKEN=... DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s\n' "$0" >&2
   exit 64
 }
 
 deploy_host=${DEPLOY_HOST:-}
 deploy_path=${DEPLOY_PATH:-/opt/aria2-transfer-gateway}
 deploy_port=${DEPLOY_PORT:-22}
+ghcr_username=${GHCR_USERNAME:-}
+ghcr_token=${GHCR_TOKEN:-}
 
 if [ -z "$deploy_host" ]; then
   usage
@@ -36,6 +38,13 @@ case "$deploy_path" in
     ;;
 esac
 
+case "$ghcr_username" in
+  *"'"*)
+    printf "GHCR_USERNAME must not contain single quotes\n" >&2
+    exit 64
+    ;;
+esac
+
 command -v rsync >/dev/null 2>&1 || {
   printf 'rsync is required\n' >&2
   exit 69
@@ -48,25 +57,37 @@ command -v ssh >/dev/null 2>&1 || {
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
+login_ghcr() {
+  if [ -z "$ghcr_username" ] && [ -z "$ghcr_token" ]; then
+    return 0
+  fi
+  if [ -z "$ghcr_username" ] || [ -z "$ghcr_token" ]; then
+    printf 'GHCR_USERNAME and GHCR_TOKEN must be set together\n' >&2
+    exit 64
+  fi
+  printf '%s' "$ghcr_token" |
+    ssh -p "$deploy_port" "$deploy_host" \
+      "docker login ghcr.io --username '$ghcr_username' --password-stdin"
+}
+
 printf 'preparing %s:%s\n' "$deploy_host" "$deploy_path"
-ssh -p "$deploy_port" "$deploy_host" "mkdir -p -- '$deploy_path'"
+ssh -p "$deploy_port" "$deploy_host" \
+  "mkdir -p -- '$deploy_path' '$deploy_path/hooks' '$deploy_path/deploy'"
+login_ghcr
 
-printf 'syncing project files\n'
-rsync -azP \
-  -e "ssh -p $deploy_port" \
-  --exclude '/.git/' \
-  --exclude '/.codegraph/' \
-  --exclude '/.env.local' \
-  --exclude '/runtime/' \
-  --exclude '/data/' \
-  --exclude '/tmp/' \
-  --exclude '/bin/' \
-  --exclude '/gateway' \
-  --exclude '*.log' \
-  "$project_root/" "$deploy_host:$deploy_path/"
+printf 'syncing deployment files\n'
+rsync -azP -e "ssh -p $deploy_port" \
+  "$project_root/docker-compose.yml" \
+  "$deploy_host:$deploy_path/"
+rsync -azP -e "ssh -p $deploy_port" \
+  "$project_root/hooks/" \
+  "$deploy_host:$deploy_path/hooks/"
+rsync -azP -e "ssh -p $deploy_port" \
+  "$project_root/deploy/prepare-runtime.sh" \
+  "$project_root/deploy/gateway.yaml" \
+  "$deploy_host:$deploy_path/deploy/"
 
-printf 'building and restarting services\n'
-ssh -p "$deploy_port" "$deploy_host" "cd '$deploy_path' && ./deploy/prepare-runtime.sh && docker compose up -d --build"
-printf 'cleaning unused project images\n'
-ssh -p "$deploy_port" "$deploy_host" "docker image prune -af --filter label=com.docker.compose.project=aria2-transfer-gateway"
+printf 'pulling and restarting GHCR images\n'
+ssh -p "$deploy_port" "$deploy_host" \
+  "cd '$deploy_path' && ./deploy/prepare-runtime.sh && docker compose pull && docker compose up -d --no-build --force-recreate"
 printf 'deployment complete\n'

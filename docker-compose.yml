@@ -22,9 +22,7 @@ services:
       - ./hooks/aria2-init-hooks.sh:/etc/cont-init.d/29-gateway-hooks:ro
 
   gateway:
-    build:
-      context: .
-      dockerfile: deploy/gateway.Dockerfile
+    image: "${GATEWAY_IMAGE:-ghcr.io/ayanami-desu/aria2-transfer-gateway:latest}"
     container_name: aria2-transfer-gateway
     restart: unless-stopped
     network_mode: host
