@@ -62,8 +62,6 @@ rsync -azP \
   --exclude '/tmp/' \
   --exclude '/bin/' \
   --exclude '/gateway' \
-  --exclude '/third_party/ariang/node_modules/' \
-  --exclude '/third_party/ariang/dist/' \
   --exclude '*.log' \
   "$project_root/" "$deploy_host:$deploy_path/"
 

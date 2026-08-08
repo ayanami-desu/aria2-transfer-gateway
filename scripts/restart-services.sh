@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-  printf 'usage: DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s [aria2|gateway|ariang ...]\n' "$0" >&2
+  printf 'usage: DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s [aria2|gateway ...]\n' "$0" >&2
   exit 64
 }
 
@@ -44,7 +44,7 @@ command -v ssh >/dev/null 2>&1 || {
 services=
 for service in "$@"; do
   case "$service" in
-    aria2|gateway|ariang)
+    aria2|gateway)
       services="$services $service"
       ;;
     *)
@@ -55,7 +55,7 @@ for service in "$@"; do
 done
 
 if [ -z "$services" ]; then
-  services=' aria2 gateway ariang'
+  services=' aria2 gateway'
 fi
 
 printf 'restarting %s on %s:%s\n' "$services" "$deploy_host" "$deploy_path"
