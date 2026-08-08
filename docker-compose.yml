@@ -40,3 +40,11 @@ services:
       - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
       - "${RCLONE_CONFIG_DIR:-./runtime/rclone}:/rclone"
 
+  ariang:
+    image: "${ARIANG_IMAGE:-ghcr.io/ayanami-desu/ariang:latest}"
+    container_name: aria2-transfer-ariang
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+

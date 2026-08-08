@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-  printf 'usage: GHCR_USERNAME=... GHCR_TOKEN=... DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s [aria2|gateway ...]\n' "$0" >&2
+  printf 'usage: GHCR_USERNAME=... GHCR_TOKEN=... DEPLOY_HOST=user@server [DEPLOY_PATH=/opt/aria2-transfer-gateway] [DEPLOY_PORT=22] %s [aria2|gateway|ariang ...]\n' "$0" >&2
   exit 64
 }
 
@@ -66,7 +66,7 @@ login_ghcr() {
 services=
 for service in "$@"; do
   case "$service" in
-    aria2|gateway)
+    aria2|gateway|ariang)
       services="$services $service"
       ;;
     *)
@@ -77,7 +77,7 @@ for service in "$@"; do
 done
 
 if [ -z "$services" ]; then
-  services=' aria2 gateway'
+  services=' aria2 gateway ariang'
 fi
 
 login_ghcr
