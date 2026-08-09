@@ -174,6 +174,9 @@ func normalizeManagedDestination(destination domain.Destination) (domain.Destina
 		if destination.Remote == "" {
 			return domain.Destination{}, errors.New("rclone remote is required")
 		}
+		if destination.RcloneConfig == "" {
+			return domain.Destination{}, errors.New("rclone config path is required")
+		}
 		root, err := domain.NormalizeTargetPath(destination.Root)
 		if err != nil {
 			return domain.Destination{}, fmt.Errorf("invalid rclone root: %w", err)

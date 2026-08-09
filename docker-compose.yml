@@ -12,6 +12,7 @@ services:
       RPC_PORT: "6800"
       LISTEN_PORT: "6888"
       UPDATE_TRACKERS: "true"
+      # aria2 容器内的完成/停止 hook 用这些变量回调网关。
       GATEWAY_URL: "${GATEWAY_URL:-http://127.0.0.1:8787}"
       GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
     volumes:
@@ -30,12 +31,8 @@ services:
     environment:
       PUID: "${PUID:-1000}"
       PGID: "${PGID:-1000}"
-      RCLONE_CONFIG: "${RCLONE_CONFIG:-/rclone/rclone.conf}"
       ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
-      ARIA2_RPC_ENDPOINT: "${ARIA2_RPC_ENDPOINT:-http://127.0.0.1:6800/jsonrpc}"
       GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
-      GATEWAY_LISTEN_ADDR: "${GATEWAY_LISTEN_ADDR:-0.0.0.0:8787}"
-      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - "${GATEWAY_DATA_DIR:-./runtime/gateway}:/data"

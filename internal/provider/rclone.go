@@ -63,9 +63,11 @@ func (p *Rclone) Transfer(ctx context.Context, request TransferRequest) error {
 		}
 		args = append(args, "--files-from0", listPath)
 	}
-	if request.Destination.RcloneConfig != "" {
-		args = append(args, "--config", request.Destination.RcloneConfig)
+	configPath := strings.TrimSpace(request.Destination.RcloneConfig)
+	if configPath == "" {
+		return fmt.Errorf("rclone destination %q has no config path", request.Destination.ID)
 	}
+	args = append(args, "--config", configPath)
 	cmd := exec.CommandContext(ctx, p.Binary, args...)
 	if request.Destination.Proxy != "" {
 		cmd.Env = rcloneProxyEnvironment(os.Environ(), request.Destination.Proxy)

@@ -292,7 +292,7 @@ func TestDestinationManagementRedactsSecretsAndFindsMagnetTask(t *testing.T) {
 		taskStore,
 		apiFakeDownloader{},
 		map[string]provider.Provider{"openlist": apiFakeProvider{}, "rclone": apiFakeProvider{}},
-		[]domain.Destination{{ID: "backup", Name: "Backup", Provider: "rclone", Remote: "backup"}},
+		[]domain.Destination{{ID: "backup", Name: "Backup", Provider: "rclone", Remote: "backup", RcloneConfig: "/rclone/rclone.conf"}},
 		"backup",
 		filepath.Join(t.TempDir(), "download"),
 		1,

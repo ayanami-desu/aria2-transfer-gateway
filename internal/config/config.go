@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -65,35 +64,8 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	}
-	cfg.applyEnvironment()
 	cfg.applyDefaults()
 	return cfg, nil
-}
-
-func (c *Config) applyEnvironment() {
-	if value := strings.TrimSpace(os.Getenv("GATEWAY_LISTEN_ADDR")); value != "" {
-		c.ListenAddr = value
-	}
-
-	if value := strings.TrimSpace(os.Getenv("ARIA2_RPC_ENDPOINT")); value != "" {
-		c.Aria2.Endpoint = value
-	}
-
-	raw := strings.TrimSpace(os.Getenv("GATEWAY_CORS_ORIGINS"))
-	if raw == "" {
-		return
-	}
-
-	origins := make([]string, 0, strings.Count(raw, ",")+1)
-	for _, origin := range strings.Split(raw, ",") {
-		origin = strings.TrimSpace(origin)
-		if origin != "" {
-			origins = append(origins, origin)
-		}
-	}
-	if len(origins) > 0 {
-		c.CORSOrigins = origins
-	}
 }
 
 func (c *Config) applyDefaults() {

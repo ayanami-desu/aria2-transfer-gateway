@@ -74,3 +74,15 @@ done
 		t.Fatalf("proxy environment = %q", proxyEnvironment)
 	}
 }
+func TestRcloneTransferRequiresConfigPath(t *testing.T) {
+	err := NewRclone(filepath.Join(t.TempDir(), "missing-rclone")).Transfer(context.Background(), TransferRequest{
+		TargetPath: "/movies/2026",
+		Destination: domain.Destination{
+			ID:     "drive",
+			Remote: "remote",
+		},
+	})
+	if err == nil || err.Error() != "rclone destination \"drive\" has no config path" {
+		t.Fatalf("error = %v, want missing config path", err)
+	}
+}

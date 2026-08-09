@@ -1090,7 +1090,7 @@ func TestServiceManagesPersistentDestinationsAndDynamicDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	downloadRoot := filepath.Join(t.TempDir(), "download")
-	legacy := domain.Destination{ID: "legacy", Name: "Legacy", Provider: "rclone", Remote: "legacy"}
+	legacy := domain.Destination{ID: "legacy", Name: "Legacy", Provider: "rclone", Remote: "legacy", RcloneConfig: "/rclone/rclone.conf"}
 	service, err := NewService(taskStore, fakeDownloader{}, map[string]provider.Provider{"openlist": &fakeProvider{}, "rclone": &fakeProvider{}}, []domain.Destination{legacy}, legacy.ID, downloadRoot, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -1151,5 +1151,16 @@ func TestServiceManagesPersistentDestinationsAndDynamicDefault(t *testing.T) {
 	}
 	if restarted.DefaultDestinationID() != managed.ID || len(restarted.Destinations()) != 2 {
 		t.Fatalf("restarted destinations = %#v, default = %q", restarted.Destinations(), restarted.DefaultDestinationID())
+	}
+}
+func TestRcloneDestinationRequiresConfigPath(t *testing.T) {
+	_, err := normalizeManagedDestination(domain.Destination{
+		ID:       "drive",
+		Name:     "Drive",
+		Provider: "rclone",
+		Remote:   "remote",
+	})
+	if err == nil || err.Error() != "rclone config path is required" {
+		t.Fatalf("error = %v, want rclone config path is required", err)
 	}
 }

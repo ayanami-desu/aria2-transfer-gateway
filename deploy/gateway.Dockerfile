@@ -11,6 +11,5 @@ RUN apk add --no-cache ca-certificates curl su-exec
 COPY --from=build /out/gateway /usr/local/bin/gateway
 COPY deploy/gateway-entrypoint.sh /usr/local/bin/gateway-entrypoint
 RUN chmod 0755 /usr/local/bin/gateway-entrypoint
-ENV RCLONE_CONFIG=/rclone/rclone.conf
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/gateway-entrypoint"]

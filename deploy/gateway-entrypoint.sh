@@ -3,10 +3,9 @@ set -eu
 
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
-RCLONE_CONFIG=${RCLONE_CONFIG:-/rclone/rclone.conf}
 HOME=/home/gateway
 TMPDIR=/tmp
-export PUID PGID RCLONE_CONFIG HOME TMPDIR
+export PUID PGID HOME TMPDIR
 
 fail() {
     printf 'gateway entrypoint: %s\n' "$1" >&2
