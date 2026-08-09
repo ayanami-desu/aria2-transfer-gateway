@@ -32,88 +32,64 @@ type Destination struct {
 }
 
 type Task struct {
-	ID                 string            `json:"id"`
-	GID                string            `json:"gid,omitempty"`
-	Type               string            `json:"type"`
-	URLs               []string          `json:"urls,omitempty"`
-	Content            string            `json:"content,omitempty"`
-	Options            map[string]string `json:"options,omitempty"`
-	DestinationID      string            `json:"destination_id"`
-	TargetPath         string            `json:"target_path"`
-	DownloadPath       string            `json:"download_path"`
-	FinalFiles         []string          `json:"final_files"`
-	Status             string            `json:"status"`
-	Error              string            `json:"error,omitempty"`
-	RetryCount         int               `json:"retry_count"`
-	Cleanup            bool              `json:"cleanup"`
-	Pause              bool              `json:"pause"`
-	TransferTotalBytes int64             `json:"transfer_total_bytes"`
-	TransferredBytes   int64             `json:"transferred_bytes"`
-	TransferSpeed      int64             `json:"transfer_speed"`
-	TransferUpdatedAt  time.Time         `json:"transfer_updated_at,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	CompletedAt        time.Time         `json:"completed_at,omitempty"`
+	ID            string            `json:"id"`
+	GID           string            `json:"gid,omitempty"`
+	Type          string            `json:"type"`
+	URLs          []string          `json:"urls,omitempty"`
+	Content       string            `json:"content,omitempty"`
+	Options       map[string]string `json:"options,omitempty"`
+	DestinationID string            `json:"destination_id"`
+	TargetPath    string            `json:"target_path"`
+	DownloadPath  string            `json:"download_path"`
+	FinalFiles    []string          `json:"final_files"`
+	Status        string            `json:"status"`
+	Error         string            `json:"error,omitempty"`
+	RetryCount    int               `json:"retry_count"`
+	Cleanup       bool              `json:"cleanup"`
+	Pause         bool              `json:"pause"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	CompletedAt   time.Time         `json:"completed_at,omitempty"`
 }
 
 type TaskView struct {
-	ID                 string    `json:"id"`
-	GID                string    `json:"gid,omitempty"`
-	Type               string    `json:"type"`
-	URLs               []string  `json:"urls,omitempty"`
-	FileNames          []string  `json:"file_names"`
-	DestinationID      string    `json:"destination_id"`
-	Destination        string    `json:"destination"`
-	TargetPath         string    `json:"target_path"`
-	Status             string    `json:"status"`
-	Error              string    `json:"error,omitempty"`
-	RetryCount         int       `json:"retry_count"`
-	Cleanup            bool      `json:"cleanup"`
-	Pause              bool      `json:"pause"`
-	TransferTotalBytes int64     `json:"transfer_total_bytes"`
-	TransferredBytes   int64     `json:"transferred_bytes"`
-	TransferProgress   int       `json:"transfer_progress"`
-	TransferSpeed      int64     `json:"transfer_speed"`
-	TransferUpdatedAt  time.Time `json:"transfer_updated_at,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	CompletedAt        time.Time `json:"completed_at,omitempty"`
+	ID            string    `json:"id"`
+	GID           string    `json:"gid,omitempty"`
+	Type          string    `json:"type"`
+	URLs          []string  `json:"urls,omitempty"`
+	FileNames     []string  `json:"file_names"`
+	DestinationID string    `json:"destination_id"`
+	Destination   string    `json:"destination"`
+	TargetPath    string    `json:"target_path"`
+	Status        string    `json:"status"`
+	Error         string    `json:"error,omitempty"`
+	RetryCount    int       `json:"retry_count"`
+	Cleanup       bool      `json:"cleanup"`
+	Pause         bool      `json:"pause"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	CompletedAt   time.Time `json:"completed_at,omitempty"`
 }
 
 func (t Task) View(destinationName string) TaskView {
 	return TaskView{
-		ID:                 t.ID,
-		GID:                t.GID,
-		Type:               t.Type,
-		URLs:               append([]string(nil), t.URLs...),
-		FileNames:          taskFileNames(t),
-		DestinationID:      t.DestinationID,
-		Destination:        destinationName,
-		TargetPath:         t.TargetPath,
-		Status:             t.Status,
-		Error:              t.Error,
-		RetryCount:         t.RetryCount,
-		Cleanup:            t.Cleanup,
-		TransferTotalBytes: t.TransferTotalBytes,
-		TransferredBytes:   t.TransferredBytes,
-		TransferProgress:   transferPercent(t.TransferredBytes, t.TransferTotalBytes),
-		TransferSpeed:      t.TransferSpeed,
-		TransferUpdatedAt:  t.TransferUpdatedAt,
-		Pause:              t.Pause,
-		CreatedAt:          t.CreatedAt,
-		UpdatedAt:          t.UpdatedAt,
-		CompletedAt:        t.CompletedAt,
+		ID:            t.ID,
+		GID:           t.GID,
+		Type:          t.Type,
+		URLs:          append([]string(nil), t.URLs...),
+		FileNames:     taskFileNames(t),
+		DestinationID: t.DestinationID,
+		Destination:   destinationName,
+		TargetPath:    t.TargetPath,
+		Status:        t.Status,
+		Error:         t.Error,
+		RetryCount:    t.RetryCount,
+		Cleanup:       t.Cleanup,
+		Pause:         t.Pause,
+		CreatedAt:     t.CreatedAt,
+		UpdatedAt:     t.UpdatedAt,
+		CompletedAt:   t.CompletedAt,
 	}
-}
-
-func transferPercent(transferred, total int64) int {
-	if total <= 0 || transferred <= 0 {
-		return 0
-	}
-	if transferred >= total {
-		return 100
-	}
-	return int(float64(transferred) / float64(total) * 100)
 }
 
 func taskFileNames(task Task) []string {

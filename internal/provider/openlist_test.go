@@ -43,7 +43,6 @@ func TestOpenListTransferStreamsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var progress []TransferProgress
 	provider := NewOpenList(server.Client())
 	err := provider.Transfer(context.Background(), TransferRequest{
 		SourceDir:  source,
@@ -54,15 +53,9 @@ func TestOpenListTransferStreamsFiles(t *testing.T) {
 			Mount:    "/google-drive",
 			Token:    "token-value",
 		},
-		OnProgress: func(update TransferProgress) {
-			progress = append(progress, update)
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(progress) < 2 || progress[0].TotalBytes != 5 || progress[0].TransferredBytes != 0 || progress[len(progress)-1].TotalBytes != 5 || progress[len(progress)-1].TransferredBytes != 5 {
-		t.Fatalf("progress updates = %#v", progress)
 	}
 }
 

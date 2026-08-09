@@ -239,10 +239,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 	retry_count INTEGER NOT NULL DEFAULT 0,
 	cleanup INTEGER NOT NULL DEFAULT 0,
 	pause INTEGER NOT NULL DEFAULT 0,
-	transfer_total_bytes INTEGER NOT NULL DEFAULT 0,
-	transferred_bytes INTEGER NOT NULL DEFAULT 0,
-	transfer_speed INTEGER NOT NULL DEFAULT 0,
-	transfer_updated_at TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	completed_at TEXT
@@ -271,14 +267,6 @@ CREATE TABLE IF NOT EXISTS gateway_settings (
 		return fmt.Errorf("initialize SQLite task store: %w", err)
 	}
 	if err := ensureSQLiteColumns(s.db, "destinations", map[string]string{"proxy": "TEXT NOT NULL DEFAULT ''"}); err != nil {
-		return err
-	}
-	if err := ensureSQLiteColumns(s.db, "tasks", map[string]string{
-		"transfer_total_bytes": "INTEGER NOT NULL DEFAULT 0",
-		"transferred_bytes":    "INTEGER NOT NULL DEFAULT 0",
-		"transfer_speed":       "INTEGER NOT NULL DEFAULT 0",
-		"transfer_updated_at":  "TEXT",
-	}); err != nil {
 		return err
 	}
 	return nil
@@ -326,11 +314,9 @@ func ensureSQLiteColumns(db *sql.DB, table string, columns map[string]string) er
 	return nil
 }
 
-const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, transfer_total_bytes, transferred_bytes, transfer_speed, transfer_updated_at, created_at, updated_at, completed_at FROM tasks`
-
-const insertTaskSQL = `INSERT INTO tasks (id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, transfer_total_bytes, transferred_bytes, transfer_speed, transfer_updated_at, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-const updateTaskSQL = `UPDATE tasks SET gid = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, download_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, transfer_total_bytes = ?, transferred_bytes = ?, transfer_speed = ?, transfer_updated_at = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
+const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at FROM tasks`
+const insertTaskSQL = `INSERT INTO tasks (id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const updateTaskSQL = `UPDATE tasks SET gid = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, download_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
 
 func buildListQuery(filter TaskFilter) (string, []any) {
 	query := selectTaskSQL
@@ -386,7 +372,6 @@ func scanTask(row rowScanner) (domain.Task, error) {
 	var urlsRaw, optionsRaw, finalFilesRaw sql.NullString
 	var completedAtRaw sql.NullString
 	var retryCount, cleanup, pause int64
-	var transferUpdatedAtRaw sql.NullString
 	var createdAtRaw, updatedAtRaw string
 	if err := row.Scan(
 		&task.ID,
@@ -404,10 +389,6 @@ func scanTask(row rowScanner) (domain.Task, error) {
 		&retryCount,
 		&cleanup,
 		&pause,
-		&task.TransferTotalBytes,
-		&task.TransferredBytes,
-		&task.TransferSpeed,
-		&transferUpdatedAtRaw,
 		&createdAtRaw,
 		&updatedAtRaw,
 		&completedAtRaw,
@@ -429,11 +410,6 @@ func scanTask(row rowScanner) (domain.Task, error) {
 	}
 	if task.UpdatedAt, err = parseTaskTime(updatedAtRaw); err != nil {
 		return domain.Task{}, fmt.Errorf("decode task updated time: %w", err)
-	}
-	if transferUpdatedAtRaw.Valid {
-		if task.TransferUpdatedAt, err = parseTaskTime(transferUpdatedAtRaw.String); err != nil {
-			return domain.Task{}, fmt.Errorf("decode task transfer update time: %w", err)
-		}
 	}
 	if completedAtRaw.Valid {
 		if task.CompletedAt, err = parseTaskTime(completedAtRaw.String); err != nil {
@@ -462,10 +438,6 @@ func taskValues(task domain.Task) ([]any, error) {
 			return nil, fmt.Errorf("encode task final files: %w", err)
 		}
 	}
-	var transferUpdatedAt any
-	if !task.TransferUpdatedAt.IsZero() {
-		transferUpdatedAt = formatTaskTime(task.TransferUpdatedAt)
-	}
 	var completedAt any
 	if !task.CompletedAt.IsZero() {
 		completedAt = formatTaskTime(task.CompletedAt)
@@ -486,10 +458,6 @@ func taskValues(task domain.Task) ([]any, error) {
 		task.RetryCount,
 		boolValue(task.Cleanup),
 		boolValue(task.Pause),
-		task.TransferTotalBytes,
-		task.TransferredBytes,
-		task.TransferSpeed,
-		transferUpdatedAt,
 		formatTaskTime(task.CreatedAt),
 		formatTaskTime(task.UpdatedAt),
 		completedAt,

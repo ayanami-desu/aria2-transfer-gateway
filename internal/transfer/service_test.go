@@ -78,7 +78,6 @@ type fakeProvider struct {
 	started   chan struct{}
 	release   chan struct{}
 	cancelled chan struct{}
-	progress  []provider.TransferProgress
 }
 
 func (p *fakeProvider) Transfer(ctx context.Context, request provider.TransferRequest) error {
@@ -87,11 +86,6 @@ func (p *fakeProvider) Transfer(ctx context.Context, request provider.TransferRe
 	p.mu.Unlock()
 	if p.started != nil {
 		close(p.started)
-	}
-	if request.OnProgress != nil {
-		for _, progress := range p.progress {
-			request.OnProgress(progress)
-		}
 	}
 	if p.done != nil {
 		close(p.done)
@@ -426,7 +420,7 @@ func TestServiceTransfersCompletedTaskAndCleansDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := &fakeProvider{done: make(chan struct{}), progress: []provider.TransferProgress{{TotalBytes: 7}, {TotalBytes: 7, TransferredBytes: 3}, {TotalBytes: 7, TransferredBytes: 7}}}
+	backend := &fakeProvider{done: make(chan struct{})}
 	downloader := &fakeDownloader{}
 	service, err := NewService(
 		taskStore,
@@ -478,9 +472,6 @@ func TestServiceTransfersCompletedTaskAndCleansDownload(t *testing.T) {
 		if current.Status == domain.StatusCompleted {
 			if _, err := os.Stat(task.DownloadPath); !os.IsNotExist(err) {
 				t.Fatalf("download path still exists: %v", err)
-			}
-			if current.TransferTotalBytes != 7 || current.TransferredBytes != 7 || current.TransferSpeed != 0 || current.TransferUpdatedAt.IsZero() {
-				t.Fatalf("transfer progress = total %d, transferred %d, speed %d, updated %v", current.TransferTotalBytes, current.TransferredBytes, current.TransferSpeed, current.TransferUpdatedAt)
 			}
 			return
 		}

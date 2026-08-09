@@ -842,10 +842,6 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		}
 		current.Status = domain.StatusTransferring
 		current.Error = ""
-		current.TransferTotalBytes = 0
-		current.TransferredBytes = 0
-		current.TransferSpeed = 0
-		current.TransferUpdatedAt = time.Time{}
 		return nil
 	}); err != nil {
 		return
@@ -906,7 +902,6 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		TargetPath:  task.TargetPath,
 		Files:       task.FinalFiles,
 		Destination: destination,
-		OnProgress:  s.transferProgressReporter(id),
 	})
 	if err != nil {
 		if !s.shouldStopTransfer(transferCtx, id) {
@@ -934,11 +929,6 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 		}
 		current.Status = domain.StatusCompleted
 		current.Error = ""
-		if current.TransferTotalBytes > 0 {
-			current.TransferredBytes = current.TransferTotalBytes
-		}
-		current.TransferSpeed = 0
-		current.TransferUpdatedAt = time.Now().UTC()
 		current.CompletedAt = time.Now().UTC()
 		return nil
 	})
@@ -951,50 +941,9 @@ func (s *Service) markFailed(id string, transferErr error) {
 		}
 		current.Status = domain.StatusFailed
 		current.Error = transferErr.Error()
-		current.TransferSpeed = 0
 		current.RetryCount++
 		return nil
 	})
-}
-
-func (s *Service) transferProgressReporter(id string) func(provider.TransferProgress) {
-	var lastUpdate time.Time
-	var lastBytes int64
-	return func(progress provider.TransferProgress) {
-		if progress.TotalBytes < 0 {
-			progress.TotalBytes = 0
-		}
-		if progress.TransferredBytes < 0 {
-			progress.TransferredBytes = 0
-		}
-		if progress.TotalBytes > 0 && progress.TransferredBytes > progress.TotalBytes {
-			progress.TransferredBytes = progress.TotalBytes
-		}
-		now := time.Now().UTC()
-		complete := progress.TotalBytes > 0 && progress.TransferredBytes >= progress.TotalBytes
-		if !lastUpdate.IsZero() && now.Sub(lastUpdate) < time.Second && !complete {
-			return
-		}
-		var speed int64
-		if !lastUpdate.IsZero() && progress.TransferredBytes >= lastBytes {
-			elapsed := now.Sub(lastUpdate).Seconds()
-			if elapsed > 0 {
-				speed = int64(float64(progress.TransferredBytes-lastBytes) / elapsed)
-			}
-		}
-		_, _ = s.store.Update(id, func(current *domain.Task) error {
-			if current.Status == domain.StatusDeleting {
-				return errTaskDeleting
-			}
-			current.TransferTotalBytes = progress.TotalBytes
-			current.TransferredBytes = progress.TransferredBytes
-			current.TransferSpeed = speed
-			current.TransferUpdatedAt = now
-			return nil
-		})
-		lastUpdate = now
-		lastBytes = progress.TransferredBytes
-	}
 }
 
 func (s *Service) registerTaskRun(id string, run *taskRun) bool {

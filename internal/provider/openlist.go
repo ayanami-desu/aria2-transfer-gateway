@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,16 +27,12 @@ func NewOpenList(client *http.Client) *OpenList {
 
 type countedReader struct {
 	io.Reader
-	count  int64
-	onRead func(int64)
+	count int64
 }
 
 func (r *countedReader) Read(data []byte) (int, error) {
 	n, err := r.Reader.Read(data)
 	r.count += int64(n)
-	if n > 0 && r.onRead != nil {
-		r.onRead(int64(n))
-	}
 	return n, err
 }
 
@@ -56,22 +51,12 @@ func (p *OpenList) Transfer(ctx context.Context, request TransferRequest) error 
 	if err != nil {
 		return err
 	}
-	files, totalBytes, err := collectOpenListFiles(request, target)
+	files, err := collectOpenListFiles(request, target)
 	if err != nil {
 		return err
 	}
-	if request.OnProgress != nil {
-		request.OnProgress(TransferProgress{TotalBytes: totalBytes})
-	}
-	var transferredBytes int64
 	for _, file := range files {
-		err := p.uploadFile(ctx, client, request.Destination, file.localPath, file.remotePath, file.size, func(written int64) {
-			transferredBytes += written
-			if request.OnProgress != nil {
-				request.OnProgress(TransferProgress{TotalBytes: totalBytes, TransferredBytes: transferredBytes})
-			}
-		})
-		if err != nil {
+		if err := p.uploadFile(ctx, client, request.Destination, file.localPath, file.remotePath, file.size); err != nil {
 			return err
 		}
 	}
@@ -84,7 +69,7 @@ type openListFile struct {
 	size       int64
 }
 
-func collectOpenListFiles(request TransferRequest, target string) ([]openListFile, int64, error) {
+func collectOpenListFiles(request TransferRequest, target string) ([]openListFile, error) {
 	var allowed map[string]struct{}
 	if request.Files != nil {
 		allowed = make(map[string]struct{}, len(request.Files))
@@ -96,7 +81,6 @@ func collectOpenListFiles(request TransferRequest, target string) ([]openListFil
 		}
 	}
 	files := make([]openListFile, 0, len(allowed))
-	var totalBytes int64
 	err := filepath.WalkDir(request.SourceDir, func(localPath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -124,10 +108,6 @@ func collectOpenListFiles(request TransferRequest, target string) ([]openListFil
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("openlist provider cannot upload %q", localPath)
 		}
-		if info.Size() > 0 && totalBytes > math.MaxInt64-info.Size() {
-			return fmt.Errorf("OpenList transfer size exceeds supported range")
-		}
-		totalBytes += info.Size()
 		files = append(files, openListFile{
 			localPath:  localPath,
 			remotePath: joinOpenListPath(request.Destination.Mount, target, relative),
@@ -136,12 +116,12 @@ func collectOpenListFiles(request TransferRequest, target string) ([]openListFil
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return files, totalBytes, nil
+	return files, nil
 }
 
-func (p *OpenList) uploadFile(ctx context.Context, client *http.Client, destination domain.Destination, localPath, remotePath string, size int64, onRead func(int64)) error {
+func (p *OpenList) uploadFile(ctx context.Context, client *http.Client, destination domain.Destination, localPath, remotePath string, size int64) error {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open %q: %w", localPath, err)
@@ -149,7 +129,7 @@ func (p *OpenList) uploadFile(ctx context.Context, client *http.Client, destinat
 	defer file.Close()
 
 	endpoint := strings.TrimRight(destination.Endpoint, "/") + "/api/fs/put"
-	countedBody := &countedReader{Reader: io.NewSectionReader(file, 0, size), onRead: onRead}
+	countedBody := &countedReader{Reader: io.NewSectionReader(file, 0, size)}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, countedBody)
 	if err != nil {
 		return fmt.Errorf("create OpenList upload request: %w", err)
