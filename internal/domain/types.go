@@ -100,9 +100,16 @@ func taskFileNames(task Task) []string {
 	if len(values) == 0 {
 		for _, rawURL := range task.URLs {
 			parsed, err := url.Parse(rawURL)
-			if err == nil && parsed.Scheme != "magnet" {
-				values = append(values, parsed.Path)
+			if err != nil {
+				continue
 			}
+			if strings.EqualFold(parsed.Scheme, "magnet") {
+				if name := strings.TrimSpace(parsed.Query().Get("dn")); name != "" {
+					values = append(values, name)
+				}
+				continue
+			}
+			values = append(values, parsed.Path)
 		}
 	}
 	result := make([]string, 0, len(values))
