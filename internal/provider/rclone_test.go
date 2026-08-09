@@ -20,7 +20,7 @@ func TestRcloneTransferBuildsArgumentVector(t *testing.T) {
 printf '%s\n' "$@" > "$RCLONE_TEST_ARGS"
 printf '%s\n' "$http_proxy" "$https_proxy" "$HTTP_PROXY" "$HTTPS_PROXY" > "$RCLONE_TEST_ENV"
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--files-from-raw" ]; then
+  if [ "$1" = "--files-from0" ]; then
     cat "$2" > "$RCLONE_TEST_FILES"
     shift 2
   else
@@ -55,14 +55,14 @@ done
 		t.Fatal(err)
 	}
 	args := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(args) != 7 || args[0] != "copy" || args[1] != "/tmp/downloads/task-1" || args[2] != "remote:library/movies/2026" || args[3] != "--files-from-raw" || args[5] != "--config" || args[6] != "/etc/rclone.conf" {
+	if len(args) != 7 || args[0] != "copy" || args[1] != "/tmp/downloads/task-1" || args[2] != "remote:library/movies/2026" || args[3] != "--files-from0" || args[5] != "--config" || args[6] != "/etc/rclone.conf" {
 		t.Fatalf("args = %#v", args)
 	}
 	fileList, err := os.ReadFile(filesFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(fileList) != "movie.mkv\n subtitles.srt\n#notes.srt\n" {
+	if string(fileList) != "movie.mkv\x00 subtitles.srt\x00#notes.srt\x00" {
 		t.Fatalf("file list = %q", fileList)
 	}
 	proxyEnvironment, err := os.ReadFile(envFile)
