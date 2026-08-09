@@ -71,6 +71,14 @@ func Load(path string) (Config, error) {
 }
 
 func (c *Config) applyEnvironment() {
+	if value := strings.TrimSpace(os.Getenv("GATEWAY_LISTEN_ADDR")); value != "" {
+		c.ListenAddr = value
+	}
+
+	if value := strings.TrimSpace(os.Getenv("ARIA2_RPC_ENDPOINT")); value != "" {
+		c.Aria2.Endpoint = value
+	}
+
 	raw := strings.TrimSpace(os.Getenv("GATEWAY_CORS_ORIGINS"))
 	if raw == "" {
 		return

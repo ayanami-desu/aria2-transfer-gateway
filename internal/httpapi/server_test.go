@@ -93,6 +93,41 @@ func TestHandlerAuthenticatesAndCreatesTask(t *testing.T) {
 		t.Fatalf("unexpected task response: %#v", response)
 	}
 }
+func TestHandlerSetsConfiguredCORS(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := transfer.NewService(
+		taskStore,
+		apiFakeDownloader{},
+		map[string]provider.Provider{"fake": apiFakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"https://ariang.example"}).Handler()
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/tasks", nil)
+	request.Header.Set("Origin", "https://ariang.example")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	request.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d", response.Code)
+	}
+	if response.Header().Get("Access-Control-Allow-Origin") != "https://ariang.example" {
+		t.Fatalf("allow origin = %q", response.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if response.Header().Get("Access-Control-Allow-Methods") == "" || response.Header().Get("Access-Control-Allow-Headers") == "" {
+		t.Fatalf("missing CORS capability headers: %#v", response.Header())
+	}
+}
 
 func TestTaskFilteringAndBatchRetry(t *testing.T) {
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))

@@ -18,7 +18,10 @@ RCLONE_CONFIG_DIR=${RCLONE_CONFIG_DIR:-./runtime/rclone}
 mkdir -p "$ARIA2_CONFIG_DIR" "$ARIA2_DOWNLOAD_DIR" "$GATEWAY_DATA_DIR" "$RCLONE_CONFIG_DIR"
 ARIA2_CONFIG_FILE=$ARIA2_CONFIG_DIR/aria2.conf
 if [ -f "$ARIA2_CONFIG_FILE" ]; then
-  sed -i 's/^rpc-listen-all=.*/rpc-listen-all=false/' "$ARIA2_CONFIG_FILE"
+  sed -i \
+    -e 's/^rpc-listen-all=.*/rpc-listen-all=true/' \
+    -e 's/^rpc-allow-origin-all=.*/rpc-allow-origin-all=true/' \
+    "$ARIA2_CONFIG_FILE"
 fi
 chown -R "$PUID:$PGID" "$ARIA2_CONFIG_DIR" "$ARIA2_DOWNLOAD_DIR" "$GATEWAY_DATA_DIR" "$RCLONE_CONFIG_DIR"
 printf 'runtime directories prepared for %s:%s\n' "$PUID" "$PGID"

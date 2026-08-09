@@ -10,7 +10,8 @@ func TestLoadYAML(t *testing.T) {
 	t.Setenv("TEST_GATEWAY_API_TOKEN", "api-token")
 	t.Setenv("TEST_ARIA2_RPC_SECRET", "aria2-secret")
 	t.Setenv("GATEWAY_CORS_ORIGINS", "")
-
+	t.Setenv("GATEWAY_LISTEN_ADDR", "")
+	t.Setenv("ARIA2_RPC_ENDPOINT", "")
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`listen_addr: 0.0.0.0:9090
 data_file: /tmp/tasks.db
@@ -66,6 +67,8 @@ func TestDefaultConfigFields(t *testing.T) {
 
 func TestLoadMissingFileUsesCodeDefaults(t *testing.T) {
 	t.Setenv("GATEWAY_CORS_ORIGINS", "https://environment.example")
+	t.Setenv("GATEWAY_LISTEN_ADDR", "")
+	t.Setenv("ARIA2_RPC_ENDPOINT", "")
 	cfg, err := Load(filepath.Join(t.TempDir(), "config.yaml"))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -92,6 +95,24 @@ func TestLoadUsesCORSOriginsFromEnvironment(t *testing.T) {
 	}
 	if len(cfg.CORSOrigins) != 2 || cfg.CORSOrigins[0] != "https://public.example" || cfg.CORSOrigins[1] != "http://localhost:6880" {
 		t.Fatalf("CORSOrigins = %#v", cfg.CORSOrigins)
+	}
+}
+func TestLoadUsesNetworkOverridesFromEnvironment(t *testing.T) {
+	t.Setenv("GATEWAY_CORS_ORIGINS", "")
+	t.Setenv("GATEWAY_LISTEN_ADDR", "0.0.0.0:8787")
+	t.Setenv("ARIA2_RPC_ENDPOINT", "http://aria2.example/jsonrpc")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("listen_addr: 127.0.0.1:8787\naria2:\n  endpoint: http://127.0.0.1:6800/jsonrpc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ListenAddr != "0.0.0.0:8787" || cfg.Aria2.Endpoint != "http://aria2.example/jsonrpc" {
+		t.Fatalf("network overrides = %#v", cfg)
 	}
 }
 

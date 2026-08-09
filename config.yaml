@@ -1,9 +1,10 @@
-listen_addr: 127.0.0.1:8787
+listen_addr: 0.0.0.0:8787
 data_file: /data/tasks.db
 download_dir: /downloads
 worker_count: 2
 cors_origins:
   - http://127.0.0.1:6880
+  - http://localhost:6880
 api:
   gateway_secret: GATEWAY_API_TOKEN
 aria2:
