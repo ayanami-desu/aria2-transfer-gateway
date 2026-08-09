@@ -53,7 +53,7 @@ func (p *Rclone) Transfer(ctx context.Context, request TransferRequest) error {
 				_ = list.Close()
 				return fmt.Errorf("write rclone file list: %w", err)
 			}
-			if _, err := list.Write([]byte{0}); err != nil {
+			if _, err := list.Write([]byte{'\n'}); err != nil {
 				_ = list.Close()
 				return fmt.Errorf("write rclone file list: %w", err)
 			}
@@ -61,7 +61,7 @@ func (p *Rclone) Transfer(ctx context.Context, request TransferRequest) error {
 		if err := list.Close(); err != nil {
 			return fmt.Errorf("close rclone file list: %w", err)
 		}
-		args = append(args, "--files-from0", listPath)
+		args = append(args, "--files-from-raw", listPath)
 	}
 	if request.Destination.RcloneConfig != "" {
 		args = append(args, "--config", request.Destination.RcloneConfig)
