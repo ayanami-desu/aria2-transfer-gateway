@@ -60,7 +60,8 @@ jobs:
             hooks/aria2-init-hooks.sh \
             hooks/aria2-stopped.sh \
             scripts/deploy.sh \
-            scripts/restart.sh
+            scripts/restart.sh \
+            scripts/update.sh
 
       - name: Publish runtime bundle
         env:

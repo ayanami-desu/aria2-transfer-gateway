@@ -7,11 +7,6 @@ deploy_host=${DEPLOY_HOST:-}
 deploy_path=${DEPLOY_PATH:-$remote_default}
 deploy_port=${DEPLOY_PORT:-22}
 
-usage() {
-  printf 'usage: [DEPLOY_HOST=user@server] [DEPLOY_PATH=/path/to/deploy] [DEPLOY_PORT=22] %s\n' "$0" >&2
-  exit 64
-}
-
 check_path() {
   case "$1" in
     *"'"*)
@@ -30,10 +25,10 @@ check_port() {
   esac
 }
 
-
-run_compose() {
+update_compose() {
   cd "$1"
   ./deploy/prepare-runtime.sh
+  docker compose pull
   docker compose up -d --no-build --force-recreate
 }
 
@@ -45,7 +40,7 @@ if [ -z "$deploy_host" ]; then
     printf 'docker is required\n' >&2
     exit 69
   }
-  run_compose "$source_root"
+  update_compose "$source_root"
   exit 0
 fi
 
@@ -62,12 +57,13 @@ command -v ssh >/dev/null 2>&1 || {
   exit 69
 }
 
-printf 'restarting services at %s:%s\n' "$deploy_host" "$deploy_path"
+printf 'updating images and restarting services at %s:%s\n' "$deploy_host" "$deploy_path"
 ssh -p "$deploy_port" "$deploy_host" "
 set -eu
 command -v docker >/dev/null 2>&1 || { printf 'docker is required on remote host\\n' >&2; exit 69; }
 cd '$deploy_path'
 ./deploy/prepare-runtime.sh
+docker compose pull
 docker compose up -d --no-build --force-recreate
 "
-printf 'services restarted\n'
+printf 'images updated and services restarted\n'
