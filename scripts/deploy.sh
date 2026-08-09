@@ -34,7 +34,6 @@ check_port() {
 
 run_compose() {
   cd "$1"
-  ./deploy/prepare-runtime.sh
   docker compose pull
   docker compose up -d --no-build --force-recreate
 }
@@ -90,7 +89,6 @@ if [ -f \"\$tmp_dir/config.yaml.backup\" ]; then
   cp \"\$tmp_dir/config.yaml.backup\" '$deploy_path/config.yaml'
 fi
 cd '$deploy_path'
-./deploy/prepare-runtime.sh
 docker compose pull
 docker compose up -d --no-build --force-recreate
 "

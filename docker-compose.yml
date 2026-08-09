@@ -10,7 +10,6 @@ services:
       UMASK_SET: "022"
       RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
       RPC_PORT: "6800"
-      RPC_LISTEN_ALL: "${RPC_LISTEN_ALL:-true}"
       LISTEN_PORT: "6888"
       UPDATE_TRACKERS: "true"
       GATEWAY_URL: "${GATEWAY_URL:-http://127.0.0.1:8787}"
@@ -28,13 +27,15 @@ services:
     network_mode: host
     depends_on:
       - aria2
-    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      RCLONE_CONFIG: "${RCLONE_CONFIG:-/rclone/rclone.conf}"
       ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}"
       ARIA2_RPC_ENDPOINT: "${ARIA2_RPC_ENDPOINT:-http://127.0.0.1:6800/jsonrpc}"
       GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?set GATEWAY_API_TOKEN}"
       GATEWAY_LISTEN_ADDR: "${GATEWAY_LISTEN_ADDR:-0.0.0.0:8787}"
-      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-http://127.0.0.1:6880,http://localhost:6880}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - "${GATEWAY_DATA_DIR:-./runtime/gateway}:/data"

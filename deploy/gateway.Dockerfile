@@ -7,10 +7,10 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/gateway ./cmd/gateway
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates rclone \
-    && addgroup -S -g 1000 gateway \
-    && adduser -S -D -H -u 1000 -G gateway gateway
+RUN apk add --no-cache ca-certificates curl su-exec
 COPY --from=build /out/gateway /usr/local/bin/gateway
+COPY deploy/gateway-entrypoint.sh /usr/local/bin/gateway-entrypoint
+RUN chmod 0755 /usr/local/bin/gateway-entrypoint
+ENV RCLONE_CONFIG=/rclone/rclone.conf
 WORKDIR /app
-USER gateway:gateway
-ENTRYPOINT ["/usr/local/bin/gateway"]
+ENTRYPOINT ["/usr/local/bin/gateway-entrypoint"]

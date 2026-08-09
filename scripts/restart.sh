@@ -33,7 +33,6 @@ check_port() {
 
 run_compose() {
   cd "$1"
-  ./deploy/prepare-runtime.sh
   docker compose up -d --no-build --force-recreate
 }
 
@@ -67,7 +66,6 @@ ssh -p "$deploy_port" "$deploy_host" "
 set -eu
 command -v docker >/dev/null 2>&1 || { printf 'docker is required on remote host\\n' >&2; exit 69; }
 cd '$deploy_path'
-./deploy/prepare-runtime.sh
 docker compose up -d --no-build --force-recreate
 "
 printf 'services restarted\n'
