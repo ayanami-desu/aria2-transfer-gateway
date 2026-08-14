@@ -69,6 +69,52 @@ func TestStorePersistsAndUpdatesTasks(t *testing.T) {
 	}
 }
 
+func TestStorePersistsTerminalTasksAcrossReopen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "tasks.db")
+	taskStore, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tasks := []domain.Task{
+		{ID: "completed-task", GID: "gid-completed", Status: domain.StatusCompleted, CreatedAt: now, UpdatedAt: now, CompletedAt: now},
+		{ID: "failed-task", GID: "gid-failed", Status: domain.StatusFailed, CreatedAt: now, UpdatedAt: now, Error: "stopped"},
+	}
+	for _, task := range tasks {
+		if err := taskStore.Create(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := taskStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.ListFiltered(TaskFilter{
+		Statuses: []string{domain.StatusCompleted, domain.StatusFailed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(tasks) {
+		t.Fatalf("terminal task count = %d, want %d", len(got), len(tasks))
+	}
+	byID := make(map[string]domain.Task, len(got))
+	for _, task := range got {
+		byID[task.ID] = task
+	}
+	if byID["completed-task"].Status != domain.StatusCompleted || !byID["completed-task"].CompletedAt.Equal(now) {
+		t.Fatalf("completed task after reopen = %#v", byID["completed-task"])
+	}
+	if byID["failed-task"].Status != domain.StatusFailed || byID["failed-task"].Error != "stopped" {
+		t.Fatalf("failed task after reopen = %#v", byID["failed-task"])
+	}
+}
+
 func TestStoreFiltersTasks(t *testing.T) {
 	taskStore, err := Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {

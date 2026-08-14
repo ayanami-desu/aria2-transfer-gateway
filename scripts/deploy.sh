@@ -70,13 +70,6 @@ command -v curl >/dev/null 2>&1 || { printf 'curl is required on remote host\\n'
 command -v tar >/dev/null 2>&1 || { printf 'tar is required on remote host\\n' >&2; exit 69; }
 command -v docker >/dev/null 2>&1 || { printf 'docker is required on remote host\\n' >&2; exit 69; }
 mkdir -p -- '$deploy_path'
-for item in '$deploy_path'/* '$deploy_path'/.[!.]* '$deploy_path'/..?*; do
-  [ -e \"\$item\" ] || continue
-  case \"\$item\" in
-    '$deploy_path'/.env|'$deploy_path'/config.yaml|'$deploy_path'/runtime|'$deploy_path'/data|'$deploy_path'/logs) continue ;;
-  esac
-  rm -rf -- \"\$item\"
-done
 tmp_dir=\$(mktemp -d /tmp/aria2-transfer-gateway.XXXXXX)
 cleanup() { rm -rf -- \"\$tmp_dir\"; }
 trap cleanup EXIT HUP INT TERM
