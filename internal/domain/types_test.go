@@ -67,7 +67,7 @@ func TestTaskViewIncludesMagnetDisplayNameBeforeCompletion(t *testing.T) {
 	task := Task{URLs: []string{"magnet:?xt=urn:btih:test&dn=Exact%20Name"}}
 
 	view := task.View("")
-	if len(view.FileNames) != 1 || view.FileNames[0] != "Exact Name" {
-		t.Fatalf("task file names = %#v, want [Exact Name]", view.FileNames)
+	if len(view.FileNames) != 1 || view.FileNames[0] != "Exact Name" || view.TaskName != "Exact Name" {
+		t.Fatalf("task view = %#v, want display name Exact Name", view)
 	}
 }

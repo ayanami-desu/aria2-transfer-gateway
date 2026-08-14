@@ -1164,3 +1164,52 @@ func TestRcloneDestinationRequiresConfigPath(t *testing.T) {
 		t.Fatalf("error = %v, want rclone config path is required", err)
 	}
 }
+
+func TestServicePopulatesTaskNameFromAria2Files(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{
+			getFiles: func(string) []aria2.DownloadFile {
+				return []aria2.DownloadFile{{Path: "Album/movie.mkv"}}
+			},
+		},
+		map[string]provider.Provider{"fake": &fakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), TaskInput{
+		Type:          "torrent",
+		Content:       "torrent-content",
+		DestinationID: "drive",
+		TargetPath:    "/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := service.ListFilteredWithTaskNames(context.Background(), store.TaskFilter{
+		Statuses: []string{domain.StatusDownloading},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].TaskName != "Album" {
+		t.Fatalf("tasks = %#v, want task name Album", tasks)
+	}
+	stored, err := taskStore.Get(tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TaskName != "Album" {
+		t.Fatalf("stored task name = %q, want Album", stored.TaskName)
+	}
+}

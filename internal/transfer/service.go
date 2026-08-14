@@ -756,6 +756,16 @@ func (s *Service) List() []domain.Task {
 func (s *Service) ListFiltered(filter store.TaskFilter) ([]domain.Task, error) {
 	return s.store.ListFiltered(filter)
 }
+func (s *Service) ListFilteredWithTaskNames(ctx context.Context, filter store.TaskFilter) ([]domain.Task, error) {
+	tasks, err := s.store.ListFiltered(filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		tasks[i] = s.ensureTaskName(ctx, tasks[i])
+	}
+	return tasks, nil
+}
 
 func (s *Service) Destinations() []domain.Destination {
 	s.destinationsMu.RLock()
@@ -780,6 +790,88 @@ func (s *Service) Destinations() []domain.Destination {
 func (s *Service) View(task domain.Task) domain.TaskView {
 	destination, _ := s.destination(task.DestinationID)
 	return task.View(destination.Name)
+}
+func (s *Service) ViewWithTaskName(ctx context.Context, task domain.Task) domain.TaskView {
+	return s.View(s.ensureTaskName(ctx, task))
+}
+
+func (s *Service) ensureTaskName(ctx context.Context, task domain.Task) domain.Task {
+	if strings.TrimSpace(task.TaskName) != "" {
+		return task
+	}
+	if name := task.DisplayName(); name != "" {
+		return s.persistTaskName(task, name)
+	}
+	if task.GID == "" || task.Status == domain.StatusCompleted || task.Status == domain.StatusFailed || task.Status == domain.StatusDeleting {
+		return task
+	}
+	lookupContext, cancel := context.WithTimeout(ctx, time.Second)
+	files, err := s.downloader.GetFiles(lookupContext, task.GID)
+	cancel()
+	if err != nil {
+		return task
+	}
+	name := taskNameFromAria2Files(task, files)
+	if name == "" {
+		return task
+	}
+	return s.persistTaskName(task, name)
+}
+
+func (s *Service) persistTaskName(task domain.Task, name string) domain.Task {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return task
+	}
+	updated, err := s.store.Update(task.ID, func(current *domain.Task) error {
+		if strings.TrimSpace(current.TaskName) == "" {
+			current.TaskName = name
+		}
+		return nil
+	})
+	if err != nil {
+		task.TaskName = name
+		return task
+	}
+	return updated
+}
+
+func taskNameFromAria2Files(task domain.Task, files []aria2.DownloadFile) string {
+	for selectedPass := 0; selectedPass < 2; selectedPass++ {
+		for _, file := range files {
+			if (selectedPass == 0 && !file.Selected) || isAria2MetadataFile(file.Path) {
+				continue
+			}
+			name := taskNameFromAria2Path(task.DownloadPath, file.Path)
+			if name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func taskNameFromAria2Path(downloadPath, filePath string) string {
+	filePath = strings.TrimSpace(strings.ReplaceAll(filePath, "\\", "/"))
+	if filePath == "" {
+		return ""
+	}
+	if strings.TrimSpace(downloadPath) != "" {
+		root, rootErr := filepath.Abs(filepath.FromSlash(strings.ReplaceAll(downloadPath, "\\", "/")))
+		candidate := filepath.FromSlash(filePath)
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, candidate)
+		}
+		if candidate, candidateErr := filepath.Abs(candidate); rootErr == nil && candidateErr == nil {
+			if relative, relativeErr := filepath.Rel(root, candidate); relativeErr == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+				relative = filepath.ToSlash(relative)
+				if first := strings.Split(relative, "/")[0]; first != "" && first != "." {
+					return first
+				}
+			}
+		}
+	}
+	return filepath.Base(filepath.FromSlash(filePath))
 }
 
 func (s *Service) enqueue(id string) error {

@@ -34,6 +34,7 @@ type Destination struct {
 type Task struct {
 	ID            string            `json:"id"`
 	GID           string            `json:"gid,omitempty"`
+	TaskName      string            `json:"task_name,omitempty"`
 	Type          string            `json:"type"`
 	URLs          []string          `json:"urls,omitempty"`
 	Content       string            `json:"content,omitempty"`
@@ -55,6 +56,7 @@ type Task struct {
 type TaskView struct {
 	ID            string    `json:"id"`
 	GID           string    `json:"gid,omitempty"`
+	TaskName      string    `json:"task_name"`
 	Type          string    `json:"type"`
 	URLs          []string  `json:"urls,omitempty"`
 	FileNames     []string  `json:"file_names"`
@@ -71,10 +73,22 @@ type TaskView struct {
 	CompletedAt   time.Time `json:"completed_at,omitempty"`
 }
 
+func (t Task) DisplayName() string {
+	if name := strings.TrimSpace(t.TaskName); name != "" {
+		return name
+	}
+	names := taskFileNames(t)
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
 func (t Task) View(destinationName string) TaskView {
 	return TaskView{
 		ID:            t.ID,
 		GID:           t.GID,
+		TaskName:      t.DisplayName(),
 		Type:          t.Type,
 		URLs:          append([]string(nil), t.URLs...),
 		FileNames:     taskFileNames(t),

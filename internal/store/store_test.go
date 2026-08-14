@@ -18,6 +18,7 @@ func TestStorePersistsAndUpdatesTasks(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := domain.Task{ID: "task-1",
 		GID:           "gid-1",
+		TaskName:      "Example Name",
 		Type:          "urls",
 		URLs:          []string{"https://example.test/file"},
 		Options:       map[string]string{"out": "file"},
@@ -60,7 +61,7 @@ func TestStorePersistsAndUpdatesTasks(t *testing.T) {
 	if got.Status != domain.StatusTransferPending {
 		t.Fatalf("status = %q, want %q", got.Status, domain.StatusTransferPending)
 	}
-	if got.URLs[0] != task.URLs[0] || got.Options["out"] != "file" || !got.Cleanup || !got.Pause {
+	if got.TaskName != task.TaskName || got.URLs[0] != task.URLs[0] || got.Options["out"] != "file" || !got.Cleanup || !got.Pause {
 		t.Fatalf("task fields were not persisted: %#v", got)
 	}
 	if got.FinalFiles[0] != "file" {

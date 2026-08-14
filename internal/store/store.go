@@ -226,6 +226,7 @@ func (s *Store) initialize() error {
 CREATE TABLE IF NOT EXISTS tasks (
 	id TEXT PRIMARY KEY,
 	gid TEXT NOT NULL DEFAULT '',
+	task_name TEXT NOT NULL DEFAULT '',
 	type TEXT NOT NULL DEFAULT '',
 	urls TEXT,
 	content TEXT NOT NULL DEFAULT '',
@@ -265,6 +266,9 @@ CREATE TABLE IF NOT EXISTS gateway_settings (
 );
 `); err != nil {
 		return fmt.Errorf("initialize SQLite task store: %w", err)
+	}
+	if err := ensureSQLiteColumns(s.db, "tasks", map[string]string{"task_name": "TEXT NOT NULL DEFAULT ''"}); err != nil {
+		return err
 	}
 	if err := ensureSQLiteColumns(s.db, "destinations", map[string]string{"proxy": "TEXT NOT NULL DEFAULT ''"}); err != nil {
 		return err
@@ -314,9 +318,9 @@ func ensureSQLiteColumns(db *sql.DB, table string, columns map[string]string) er
 	return nil
 }
 
-const selectTaskSQL = `SELECT id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at FROM tasks`
-const insertTaskSQL = `INSERT INTO tasks (id, gid, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-const updateTaskSQL = `UPDATE tasks SET gid = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, download_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
+const selectTaskSQL = `SELECT id, gid, task_name, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at FROM tasks`
+const insertTaskSQL = `INSERT INTO tasks (id, gid, task_name, type, urls, content, options, destination_id, target_path, download_path, final_files, status, error, retry_count, cleanup, pause, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const updateTaskSQL = `UPDATE tasks SET gid = ?, task_name = ?, type = ?, urls = ?, content = ?, options = ?, destination_id = ?, target_path = ?, download_path = ?, final_files = ?, status = ?, error = ?, retry_count = ?, cleanup = ?, pause = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?`
 
 func buildListQuery(filter TaskFilter) (string, []any) {
 	query := selectTaskSQL
@@ -376,6 +380,7 @@ func scanTask(row rowScanner) (domain.Task, error) {
 	if err := row.Scan(
 		&task.ID,
 		&task.GID,
+		&task.TaskName,
 		&task.Type,
 		&urlsRaw,
 		&task.Content,
@@ -445,6 +450,7 @@ func taskValues(task domain.Task) ([]any, error) {
 	return []any{
 		task.ID,
 		task.GID,
+		task.TaskName,
 		task.Type,
 		string(urls),
 		task.Content,

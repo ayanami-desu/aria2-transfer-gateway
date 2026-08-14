@@ -89,7 +89,7 @@ func TestHandlerAuthenticatesAndCreatesTask(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.GID != "gid-api" || response.Status != domain.StatusDownloading {
+	if response.GID != "gid-api" || response.Status != domain.StatusDownloading || response.TaskName != "file" {
 		t.Fatalf("unexpected task response: %#v", response)
 	}
 }

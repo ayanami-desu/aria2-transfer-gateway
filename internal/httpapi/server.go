@@ -267,7 +267,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		tasks, err := s.service.ListFiltered(filter)
+		tasks, err := s.service.ListFilteredWithTaskNames(r.Context(), filter)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -301,7 +301,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, s.service.View(task))
+		writeJSON(w, http.StatusCreated, s.service.ViewWithTaskName(r.Context(), task))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -341,7 +341,7 @@ func (s *Server) handleRetryTasks(w http.ResponseWriter, r *http.Request) {
 			response.Failed = append(response.Failed, RetryTaskFailure{ID: id, Error: err.Error()})
 			continue
 		}
-		response.Succeeded = append(response.Succeeded, s.service.View(task))
+		response.Succeeded = append(response.Succeeded, s.service.ViewWithTaskName(r.Context(), task))
 	}
 	writeJSON(w, http.StatusAccepted, response)
 }
@@ -439,7 +439,7 @@ func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, s.service.View(task))
+		writeJSON(w, http.StatusOK, s.service.ViewWithTaskName(r.Context(), task))
 		return
 	}
 	id := parts[0]
@@ -449,7 +449,7 @@ func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, s.service.View(task))
+		writeJSON(w, http.StatusOK, s.service.ViewWithTaskName(r.Context(), task))
 		return
 	}
 	if len(parts) == 1 && r.Method == http.MethodDelete {
@@ -466,7 +466,7 @@ func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, s.service.View(task))
+		writeJSON(w, http.StatusAccepted, s.service.ViewWithTaskName(r.Context(), task))
 		return
 	}
 	writeError(w, http.StatusNotFound, "task route not found")
