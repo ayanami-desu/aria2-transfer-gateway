@@ -216,7 +216,8 @@ func (c *Client) call(ctx context.Context, method string, methodParams []any, re
 		return fmt.Errorf("call aria2 %s: %w", method, err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// aria2.getFiles returns one entry per torrent file; large torrents can exceed 1 MiB.
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("read aria2 response: %w", err)
 	}

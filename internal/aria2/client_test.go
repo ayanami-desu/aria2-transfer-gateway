@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -203,5 +205,48 @@ func TestClientRemoveClassifiesMissingGID(t *testing.T) {
 	err := NewClient(server.URL, "secret", server.Client()).Remove(context.Background(), "missing-gid")
 	if !errors.Is(err, ErrGIDNotFound) {
 		t.Fatalf("error = %v, want ErrGIDNotFound", err)
+	}
+}
+func TestClientGetFilesAllowsLargeResponse(t *testing.T) {
+	type responseFile struct {
+		Path            string `json:"path"`
+		Length          string `json:"length"`
+		CompletedLength string `json:"completedLength"`
+		Selected        string `json:"selected"`
+	}
+	files := make([]responseFile, 7101)
+	for i := range files {
+		files[i] = responseFile{
+			Path:            fmt.Sprintf("/downloads/task-1/%07d-%s", i, strings.Repeat("x", 160)),
+			Length:          "1",
+			CompletedLength: "1",
+			Selected:        "true",
+		}
+	}
+	response, err := json.Marshal(struct {
+		JSONRPC string         `json:"jsonrpc"`
+		ID      int            `json:"id"`
+		Result  []responseFile `json:"result"`
+	}{JSONRPC: "2.0", ID: 1, Result: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response) <= 1<<20 {
+		t.Fatalf("response size = %d, want more than 1 MiB", len(response))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(response)
+	}))
+	defer server.Close()
+
+	got, err := NewClient(server.URL, "secret", server.Client()).GetFiles(context.Background(), "gid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(files) {
+		t.Fatalf("files = %d, want %d", len(got), len(files))
+	}
+	if got[0].Path != files[0].Path || got[len(got)-1].Path != files[len(files)-1].Path {
+		t.Fatalf("file paths were truncated: first=%q last=%q", got[0].Path, got[len(got)-1].Path)
 	}
 }
