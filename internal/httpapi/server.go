@@ -29,10 +29,15 @@ type CreateTaskRequest struct {
 	URLs          []string       `json:"urls"`
 	Content       string         `json:"content"`
 	Options       map[string]any `json:"options"`
+	SelectFiles   []int          `json:"select_files"`
 	DestinationID string         `json:"destination_id"`
 	TargetPath    string         `json:"target_path"`
 	Cleanup       *bool          `json:"cleanup"`
 	Pause         bool           `json:"pause"`
+}
+type PreviewTorrentRequest struct {
+	URL     string `json:"url"`
+	Content string `json:"content"`
 }
 
 type HookRequest struct {
@@ -145,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
+	s.mux.HandleFunc("/api/v1/torrents/preview", s.handlePreviewTorrent)
 	s.mux.HandleFunc("/api/v1/destinations", s.handleDestinations)
 	s.mux.HandleFunc("/api/v1/destinations/", s.handleDestinationPath)
 	s.mux.HandleFunc("/api/v1/tasks", s.handleTasks)
@@ -162,6 +168,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+func (s *Server) handlePreviewTorrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var request PreviewTorrentRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	magnet := strings.TrimSpace(request.URL)
+	content := strings.TrimSpace(request.Content)
+	if magnet != "" && content != "" {
+		writeError(w, http.StatusBadRequest, "url and content are mutually exclusive")
+		return
+	}
+	var (
+		preview domain.MagnetPreview
+		err     error
+	)
+	if magnet != "" {
+		preview, err = s.service.PreviewMagnet(r.Context(), magnet)
+	} else if content != "" {
+		preview, err = s.service.PreviewTorrent(r.Context(), content)
+	} else {
+		writeError(w, http.StatusBadRequest, "url or content is required")
+		return
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
 }
 
 func (s *Server) handleDestinations(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +332,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			URLs:          request.URLs,
 			Content:       request.Content,
 			Options:       request.Options,
+			SelectFiles:   request.SelectFiles,
 			DestinationID: request.DestinationID,
 			TargetPath:    request.TargetPath,
 			Cleanup:       cleanup,

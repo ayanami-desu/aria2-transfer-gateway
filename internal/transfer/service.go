@@ -3,10 +3,12 @@ package transfer
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +28,7 @@ type TaskInput struct {
 	URLs          []string
 	Content       string
 	Options       map[string]any
+	SelectFiles   []int
 	DestinationID string
 	TargetPath    string
 	Cleanup       bool
@@ -68,6 +71,39 @@ func sanitizeOptions(options map[string]any) map[string]string {
 		}
 	}
 	return result
+}
+
+func applySelectFiles(taskType string, selectFiles []int, options map[string]string) error {
+	if len(selectFiles) == 0 {
+		return nil
+	}
+	if taskType != "torrent" && taskType != "metalink" {
+		return errors.New("select_files is only supported for torrent or metalink tasks")
+	}
+	indexes := append([]int(nil), selectFiles...)
+	for _, index := range indexes {
+		if index <= 0 {
+			return errors.New("select_files must contain positive file indexes")
+		}
+	}
+	for key := range options {
+		if strings.EqualFold(key, "select-file") {
+			return errors.New("select_files conflicts with options.select-file")
+		}
+	}
+	sort.Ints(indexes)
+	unique := indexes[:0]
+	for _, index := range indexes {
+		if len(unique) == 0 || unique[len(unique)-1] != index {
+			unique = append(unique, index)
+		}
+	}
+	values := make([]string, len(unique))
+	for index, fileIndex := range unique {
+		values[index] = strconv.Itoa(fileIndex)
+	}
+	options["select-file"] = strings.Join(values, ",")
+	return nil
 }
 
 func optionValue(value any) (string, bool) {
@@ -184,6 +220,9 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 		return domain.Task{}, fmt.Errorf("content is required for %s tasks", taskType)
 	}
 	options := sanitizeOptions(input.Options)
+	if err := applySelectFiles(taskType, input.SelectFiles, options); err != nil {
+		return domain.Task{}, err
+	}
 	destinationID := strings.TrimSpace(input.DestinationID)
 	destination, exists := s.destinationOrDefault(destinationID)
 	if !exists {
@@ -247,6 +286,211 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 		return domain.Task{}, fmt.Errorf("save aria2 gid: %w", err)
 	}
 	return updated, nil
+}
+
+const magnetPreviewTimeout = 2 * time.Minute
+
+func (s *Service) PreviewMagnet(ctx context.Context, magnet string) (domain.MagnetPreview, error) {
+	magnet = strings.TrimSpace(magnet)
+	parsed, err := url.Parse(magnet)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "magnet") || strings.TrimSpace(parsed.Query().Get("xt")) == "" {
+		return domain.MagnetPreview{}, errors.New("a valid magnet URL with xt is required")
+	}
+	previewCtx, cancel := context.WithTimeout(ctx, magnetPreviewTimeout)
+	defer cancel()
+
+	metadataDir, err := os.MkdirTemp(s.downloadRoot, ".magnet-metadata-")
+	if err != nil {
+		return domain.MagnetPreview{}, fmt.Errorf("create magnet metadata directory: %w", err)
+	}
+	gid, err := s.downloader.AddURI(previewCtx, []string{magnet}, metadataDir, false, map[string]string{
+		"bt-metadata-only": "true",
+		"bt-save-metadata": "true",
+		"pause-metadata":   "true",
+		"file-allocation":  "none",
+	})
+	if err != nil {
+		_ = os.RemoveAll(metadataDir)
+		return domain.MagnetPreview{}, fmt.Errorf("resolve magnet metadata: %w", err)
+	}
+	defer s.cleanupPreview(gid, metadataDir)
+	if err := s.waitForAria2Completion(previewCtx, gid); err != nil {
+		return domain.MagnetPreview{}, fmt.Errorf("resolve magnet metadata: %w", err)
+	}
+	torrentPath, err := findSavedTorrent(metadataDir)
+	if err != nil {
+		return domain.MagnetPreview{}, err
+	}
+	content, err := os.ReadFile(torrentPath)
+	if err != nil {
+		return domain.MagnetPreview{}, fmt.Errorf("read magnet metadata: %w", err)
+	}
+	files, err := s.previewTorrentFiles(previewCtx, content)
+	if err != nil {
+		return domain.MagnetPreview{}, err
+	}
+	return domain.MagnetPreview{
+		Content: base64.StdEncoding.EncodeToString(content),
+		Files:   files,
+	}, nil
+}
+func (s *Service) PreviewTorrent(ctx context.Context, encodedContent string) (domain.MagnetPreview, error) {
+	encodedContent = strings.TrimSpace(encodedContent)
+	if encodedContent == "" {
+		return domain.MagnetPreview{}, errors.New("torrent content is required")
+	}
+	content, err := base64.StdEncoding.DecodeString(encodedContent)
+	if err != nil || len(content) == 0 {
+		return domain.MagnetPreview{}, errors.New("torrent content must be valid base64")
+	}
+	previewCtx, cancel := context.WithTimeout(ctx, magnetPreviewTimeout)
+	defer cancel()
+	files, err := s.previewTorrentFiles(previewCtx, content)
+	if err != nil {
+		return domain.MagnetPreview{}, err
+	}
+	return domain.MagnetPreview{
+		Content: base64.StdEncoding.EncodeToString(content),
+		Files:   files,
+	}, nil
+}
+
+func (s *Service) previewTorrentFiles(ctx context.Context, content []byte) ([]domain.TorrentFile, error) {
+	directory, err := os.MkdirTemp(s.downloadRoot, ".torrent-preview-")
+	if err != nil {
+		return nil, fmt.Errorf("create torrent preview directory: %w", err)
+	}
+	gid, err := s.downloader.AddTorrent(ctx, base64.StdEncoding.EncodeToString(content), directory, true, map[string]string{
+		"file-allocation": "none",
+	})
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, fmt.Errorf("inspect torrent metadata: %w", err)
+	}
+	defer s.cleanupPreview(gid, directory)
+	files, err := s.downloader.GetFiles(ctx, gid)
+	if err != nil {
+		return nil, fmt.Errorf("read torrent file list: %w", err)
+	}
+	result, err := torrentFileList(directory, files)
+	if err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, errors.New("torrent metadata contains no downloadable files")
+	}
+	return result, nil
+}
+
+func (s *Service) waitForAria2Completion(ctx context.Context, gid string) error {
+	for {
+		status, err := s.downloader.GetStatus(ctx, gid)
+		if err != nil {
+			return err
+		}
+		switch status.Status {
+		case "complete":
+			return nil
+		case "error", "removed":
+			return fmt.Errorf("aria2 task ended with status %q", status.Status)
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Service) cleanupPreview(gid, directory string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if gid != "" {
+		_ = s.cancelAria2Task(cleanupCtx, gid)
+	}
+	_ = os.RemoveAll(directory)
+}
+
+func findSavedTorrent(directory string) (string, error) {
+	var result string
+	err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ".torrent") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		result = path
+		return filepath.SkipAll
+	})
+	if err != nil {
+		return "", fmt.Errorf("find saved magnet metadata: %w", err)
+	}
+	if result == "" {
+		return "", errors.New("aria2 completed magnet metadata without saving a torrent file")
+	}
+	return result, nil
+}
+
+func torrentFileList(directory string, files []aria2.DownloadFile) ([]domain.TorrentFile, error) {
+	root, err := filepath.Abs(directory)
+	if err != nil {
+		return nil, fmt.Errorf("resolve torrent preview directory: %w", err)
+	}
+	result := make([]domain.TorrentFile, 0, len(files))
+	seen := make(map[int]struct{}, len(files))
+	for _, file := range files {
+		if isAria2MetadataFile(file.Path) {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(file.Index))
+		if err != nil || index <= 0 {
+			return nil, fmt.Errorf("invalid aria2 torrent file index %q", file.Index)
+		}
+		length, err := strconv.ParseInt(strings.TrimSpace(file.Length), 10, 64)
+		if err != nil || length < 0 {
+			return nil, fmt.Errorf("invalid aria2 torrent file length %q", file.Length)
+		}
+		localPath := file.Path
+		if !filepath.IsAbs(localPath) {
+			localPath = filepath.Join(root, localPath)
+		}
+		localPath, err = filepath.Abs(localPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve aria2 torrent file %q: %w", file.Path, err)
+		}
+		relative, err := filepath.Rel(root, localPath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("aria2 torrent file %q is outside preview directory", file.Path)
+		}
+		if _, exists := seen[index]; exists {
+			return nil, fmt.Errorf("duplicate aria2 torrent file index %d", index)
+		}
+		seen[index] = struct{}{}
+		result = append(result, domain.TorrentFile{
+			Index:  index,
+			Path:   filepath.ToSlash(relative),
+			Length: length,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Index < result[j].Index
+	})
+	return result, nil
 }
 
 func (s *Service) HandleCompleted(ctx context.Context, gid, filePath string) error {

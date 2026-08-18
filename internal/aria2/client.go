@@ -14,6 +14,7 @@ import (
 )
 
 type DownloadFile struct {
+	Index           string `json:"index"`
 	Path            string `json:"path"`
 	Length          string `json:"length"`
 	CompletedLength string `json:"completedLength"`
@@ -27,6 +28,7 @@ type DownloadStatus struct {
 
 func (f *DownloadFile) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		Index           string          `json:"index"`
 		Path            string          `json:"path"`
 		Length          string          `json:"length"`
 		CompletedLength string          `json:"completedLength"`
@@ -40,6 +42,7 @@ func (f *DownloadFile) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*f = DownloadFile{
+		Index:           raw.Index,
 		Path:            raw.Path,
 		Length:          raw.Length,
 		CompletedLength: raw.CompletedLength,

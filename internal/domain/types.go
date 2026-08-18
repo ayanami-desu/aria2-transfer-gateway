@@ -31,6 +31,17 @@ type Destination struct {
 	Token        string `json:"-"`
 }
 
+type TorrentFile struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Length int64  `json:"length"`
+}
+
+type MagnetPreview struct {
+	Content string        `json:"content"`
+	Files   []TorrentFile `json:"files"`
+}
+
 type Task struct {
 	ID            string            `json:"id"`
 	GID           string            `json:"gid,omitempty"`

@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ type fakeDownloader struct {
 	status     func(string) aria2.DownloadStatus
 	remove     func(string) error
 	add        func(string)
+	options    func(map[string]string)
 }
 
 func (d fakeDownloader) Remove(_ context.Context, gid string) error {
@@ -30,23 +32,32 @@ func (d fakeDownloader) Remove(_ context.Context, gid string) error {
 	return d.remove(gid)
 }
 
-func (d fakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, _ map[string]string) (string, error) {
+func (d fakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]string) (string, error) {
 	if d.add != nil {
 		d.add(directory)
+	}
+	if d.options != nil {
+		d.options(options)
 	}
 	return "gid-1", nil
 }
 
-func (d fakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, _ map[string]string) (string, error) {
+func (d fakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
 	if d.add != nil {
 		d.add(directory)
+	}
+	if d.options != nil {
+		d.options(options)
 	}
 	return "gid-1", nil
 }
 
-func (d fakeDownloader) AddMetalink(_ context.Context, _ string, directory string, _ bool, _ map[string]string) (string, error) {
+func (d fakeDownloader) AddMetalink(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
 	if d.add != nil {
 		d.add(directory)
+	}
+	if d.options != nil {
+		d.options(options)
 	}
 	return "gid-1", nil
 }
@@ -104,6 +115,106 @@ func (p *fakeProvider) Transfer(ctx context.Context, request provider.TransferRe
 	}
 }
 
+type magnetPreviewDownloader struct{}
+
+func (magnetPreviewDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, _ map[string]string) (string, error) {
+	if err := os.WriteFile(filepath.Join(directory, "abcdef.torrent"), []byte("torrent-content"), 0o640); err != nil {
+		return "", err
+	}
+	return "metadata-gid", nil
+}
+
+func (magnetPreviewDownloader) AddTorrent(_ context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+	return "torrent-gid", nil
+}
+
+func (magnetPreviewDownloader) AddMetalink(_ context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+	return "metalink-gid", nil
+}
+
+func (magnetPreviewDownloader) GetFiles(_ context.Context, gid string) ([]aria2.DownloadFile, error) {
+	if gid != "torrent-gid" {
+		return nil, nil
+	}
+	return []aria2.DownloadFile{
+		{Index: "2", Path: "Season/episode.mkv", Length: "7"},
+		{Index: "1", Path: "movie.mkv", Length: "10"},
+	}, nil
+}
+
+func (magnetPreviewDownloader) GetStatus(_ context.Context, _ string) (aria2.DownloadStatus, error) {
+	return aria2.DownloadStatus{Status: "complete", CompletedLength: "1", TotalLength: "1"}, nil
+}
+
+func (magnetPreviewDownloader) GetFollowedBy(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (magnetPreviewDownloader) Remove(_ context.Context, _ string) error {
+	return nil
+}
+
+func TestServicePreviewsMagnetMetadata(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloadRoot := filepath.Join(t.TempDir(), "download")
+	service, err := NewService(
+		taskStore,
+		magnetPreviewDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		downloadRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.PreviewMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Content != base64.StdEncoding.EncodeToString([]byte("torrent-content")) {
+		t.Fatalf("preview content = %q", preview.Content)
+	}
+	if len(preview.Files) != 2 || preview.Files[0].Index != 1 || preview.Files[0].Path != "movie.mkv" || preview.Files[1].Index != 2 || preview.Files[1].Path != "Season/episode.mkv" {
+		t.Fatalf("preview files = %#v", preview.Files)
+	}
+	entries, err := os.ReadDir(downloadRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preview left temporary directories: %#v", entries)
+	}
+}
+
+func TestServiceRejectsInvalidMagnetPreview(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := NewService(
+		taskStore,
+		magnetPreviewDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreviewMagnet(context.Background(), "https://example.test/file"); err == nil {
+		t.Fatal("invalid magnet preview succeeded")
+	}
+}
+
 func TestServiceDownloadsDirectlyIntoDownloadRoot(t *testing.T) {
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {
@@ -134,6 +245,75 @@ func TestServiceDownloadsDirectlyIntoDownloadRoot(t *testing.T) {
 	}
 	if info, err := os.Stat(want); err != nil || !info.IsDir() {
 		t.Fatalf("download directory stat = %v, info = %v", err, info)
+	}
+}
+func TestServiceSelectsRequestedTorrentFiles(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	var gotOptions map[string]string
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{options: func(options map[string]string) { gotOptions = options }},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create(context.Background(), TaskInput{
+		Type:        "torrent",
+		Content:     "torrent-content",
+		SelectFiles: []int{3, 1, 3},
+		TargetPath:  "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOptions["select-file"] != "1,3" {
+		t.Fatalf("aria2 select-file option = %q, want 1,3", gotOptions["select-file"])
+	}
+	stored, err := taskStore.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Options["select-file"] != "1,3" {
+		t.Fatalf("stored select-file option = %q, want 1,3", stored.Options["select-file"])
+	}
+}
+
+func TestServiceRejectsInvalidSelectedFiles(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []TaskInput{
+		{URLs: []string{"https://example.test/file"}, SelectFiles: []int{1}},
+		{Type: "torrent", Content: "torrent-content", SelectFiles: []int{0}},
+		{Type: "torrent", Content: "torrent-content", SelectFiles: []int{1}, Options: map[string]any{"SELECT-FILE": "2"}},
+	}
+	for index, input := range cases {
+		if _, err := service.Create(context.Background(), input); err == nil {
+			t.Fatalf("case %d accepted invalid select_files input", index)
+		}
 	}
 }
 

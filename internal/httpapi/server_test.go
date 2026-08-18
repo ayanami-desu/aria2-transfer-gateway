@@ -19,23 +19,37 @@ import (
 	"aria2-transfer-gateway/internal/transfer"
 )
 
-type apiFakeDownloader struct{}
+type apiFakeDownloader struct {
+	addURI     func(string, map[string]string) (string, error)
+	addTorrent func(string, map[string]string) (string, error)
+	getFiles   func(string) ([]aria2.DownloadFile, error)
+}
 
-func (apiFakeDownloader) AddURI(context.Context, []string, string, bool, map[string]string) (string, error) {
+func (d apiFakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]string) (string, error) {
+	if d.addURI != nil {
+		return d.addURI(directory, options)
+	}
 	return "gid-api", nil
 }
 
-func (apiFakeDownloader) AddTorrent(context.Context, string, string, bool, map[string]string) (string, error) {
+func (d apiFakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
+	if d.addTorrent != nil {
+		return d.addTorrent(directory, options)
+	}
 	return "gid-api", nil
 }
 
-func (apiFakeDownloader) AddMetalink(context.Context, string, string, bool, map[string]string) (string, error) {
+func (d apiFakeDownloader) AddMetalink(context.Context, string, string, bool, map[string]string) (string, error) {
 	return "gid-api", nil
 }
 
-func (apiFakeDownloader) GetFiles(context.Context, string) ([]aria2.DownloadFile, error) {
+func (d apiFakeDownloader) GetFiles(_ context.Context, gid string) ([]aria2.DownloadFile, error) {
+	if d.getFiles != nil {
+		return d.getFiles(gid)
+	}
 	return []aria2.DownloadFile{}, nil
 }
+
 func (apiFakeDownloader) GetStatus(context.Context, string) (aria2.DownloadStatus, error) {
 	return aria2.DownloadStatus{Status: "complete", CompletedLength: "1", TotalLength: "1"}, nil
 }
@@ -91,6 +105,105 @@ func TestHandlerAuthenticatesAndCreatesTask(t *testing.T) {
 	}
 	if response.GID != "gid-api" || response.Status != domain.StatusDownloading || response.TaskName != "file" {
 		t.Fatalf("unexpected task response: %#v", response)
+	}
+}
+func TestHandlerCreatesSelectedTorrentTask(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := transfer.NewService(
+		taskStore,
+		apiFakeDownloader{},
+		map[string]provider.Provider{"fake": apiFakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"*"}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(`{"type":"torrent","content":"torrent-content","select_files":[3,1,3],"destination_id":"drive","target_path":"/"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var view domain.TaskView
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := taskStore.Get(view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Options["select-file"] != "1,3" {
+		t.Fatalf("stored select-file option = %q, want 1,3", stored.Options["select-file"])
+	}
+}
+func TestHandlerPreviewsMagnetMetadata(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloader := apiFakeDownloader{
+		addURI: func(directory string, options map[string]string) (string, error) {
+			if options["bt-metadata-only"] != "true" || options["bt-save-metadata"] != "true" {
+				t.Fatalf("metadata options = %#v", options)
+			}
+			if err := os.WriteFile(filepath.Join(directory, "abcdef.torrent"), []byte("torrent-content"), 0o640); err != nil {
+				return "", err
+			}
+			return "metadata-gid", nil
+		},
+		addTorrent: func(string, map[string]string) (string, error) {
+			return "torrent-gid", nil
+		},
+		getFiles: func(gid string) ([]aria2.DownloadFile, error) {
+			if gid != "torrent-gid" {
+				return nil, nil
+			}
+			return []aria2.DownloadFile{{Index: "1", Path: "movie.mkv", Length: "10"}}, nil
+		},
+	}
+	service, err := transfer.NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": apiFakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"*"}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/torrents/preview", strings.NewReader(`{"url":"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var preview domain.MagnetPreview
+	if err := json.Unmarshal(response.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Content == "" || len(preview.Files) != 1 || preview.Files[0].Index != 1 {
+		t.Fatalf("preview = %#v", preview)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/torrents/preview", strings.NewReader(`{"content":"dG9ycmVudC1jb250ZW50"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("torrent preview status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 func TestHandlerSetsConfiguredCORS(t *testing.T) {
