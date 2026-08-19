@@ -48,6 +48,56 @@ func TestClientAddURI(t *testing.T) {
 	}
 }
 
+func TestClientAddTorrent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Method != "aria2.addTorrent" {
+			t.Errorf("method = %q", request.Method)
+		}
+		if len(request.Params) != 4 {
+			t.Fatalf("params length = %d, want 4", len(request.Params))
+		}
+		var content string
+		if err := json.Unmarshal(request.Params[1], &content); err != nil {
+			t.Fatal(err)
+		}
+		if content != "encoded-torrent" {
+			t.Errorf("torrent content = %q", content)
+		}
+		var uris []string
+		if err := json.Unmarshal(request.Params[2], &uris); err != nil {
+			t.Fatal(err)
+		}
+		if len(uris) != 0 {
+			t.Errorf("uris = %#v, want empty", uris)
+		}
+		var options map[string]string
+		if err := json.Unmarshal(request.Params[3], &options); err != nil {
+			t.Fatal(err)
+		}
+		if options["dir"] != "/downloads/task-1" || options["pause"] != "true" {
+			t.Errorf("options = %#v", options)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"gid-torrent"}`))
+	}))
+	defer server.Close()
+
+	gid, err := NewClient(server.URL, "secret", server.Client()).AddTorrent(context.Background(), "encoded-torrent", "/downloads/task-1", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gid != "gid-torrent" {
+		t.Fatalf("gid = %q, want gid-torrent", gid)
+	}
+}
+
 func TestClientGetFiles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

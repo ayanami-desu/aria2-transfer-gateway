@@ -115,7 +115,7 @@ func (c *Client) AddURI(ctx context.Context, urls []string, dir string, pause bo
 }
 
 func (c *Client) AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error) {
-	return c.add(ctx, "aria2.addTorrent", []any{content}, dir, pause, options)
+	return c.add(ctx, "aria2.addTorrent", []any{content, []string{}}, dir, pause, options)
 }
 
 func (c *Client) AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error) {

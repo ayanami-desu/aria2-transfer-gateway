@@ -1,7 +1,11 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +14,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"aria2-transfer-gateway/internal/domain"
 	"aria2-transfer-gateway/internal/store"
@@ -22,6 +28,9 @@ type Server struct {
 	corsOrigins map[string]struct{}
 	allowAny    bool
 	mux         *http.ServeMux
+
+	previewMu   sync.Mutex
+	previewJobs map[string]*previewJob
 }
 
 type CreateTaskRequest struct {
@@ -38,6 +47,81 @@ type CreateTaskRequest struct {
 type PreviewTorrentRequest struct {
 	URL     string `json:"url"`
 	Content string `json:"content"`
+}
+
+const (
+	previewJobQueued    = "queued"
+	previewJobRunning   = "running"
+	previewJobCompleted = "completed"
+	previewJobFailed    = "failed"
+	previewJobCancelled = "cancelled"
+)
+
+const previewJobRetention = 10 * time.Minute
+
+type previewJob struct {
+	id     string
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	mu      sync.RWMutex
+	status  string
+	preview *domain.MagnetPreview
+	err     string
+}
+
+type previewJobResponse struct {
+	ID      string                `json:"id"`
+	Status  string                `json:"status"`
+	Preview *domain.MagnetPreview `json:"preview,omitempty"`
+	Error   string                `json:"error,omitempty"`
+}
+
+func (j *previewJob) response() previewJobResponse {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	result := previewJobResponse{ID: j.id, Status: j.status, Error: j.err}
+	if j.preview != nil {
+		preview := *j.preview
+		preview.Files = append([]domain.TorrentFile(nil), j.preview.Files...)
+		result.Preview = &preview
+	}
+	return result
+}
+
+func (j *previewJob) markRunning() {
+	j.mu.Lock()
+	if j.status == previewJobQueued {
+		j.status = previewJobRunning
+	}
+	j.mu.Unlock()
+}
+
+func (j *previewJob) finish(preview domain.MagnetPreview, err error) {
+	j.mu.Lock()
+	if j.status == previewJobCancelled {
+		j.mu.Unlock()
+		return
+	}
+	if err != nil {
+		j.status = previewJobFailed
+		j.err = err.Error()
+	} else {
+		j.status = previewJobCompleted
+		j.preview = &preview
+	}
+	cancel := j.cancel
+	j.mu.Unlock()
+	cancel()
+}
+
+func (j *previewJob) cancelAndMark() {
+	j.mu.Lock()
+	j.status = previewJobCancelled
+	j.err = "preview cancelled"
+	cancel := j.cancel
+	j.mu.Unlock()
+	cancel()
 }
 
 type HookRequest struct {
@@ -115,9 +199,10 @@ type destinationView struct {
 
 func NewServer(service *transfer.Service, token string, corsOrigins []string) *Server {
 	server := &Server{
-		service: service,
-		token:   token,
-		mux:     http.NewServeMux(),
+		service:     service,
+		token:       token,
+		mux:         http.NewServeMux(),
+		previewJobs: make(map[string]*previewJob),
 	}
 	for _, origin := range corsOrigins {
 		origin = strings.TrimSpace(origin)
@@ -131,6 +216,124 @@ func NewServer(service *transfer.Service, token string, corsOrigins []string) *S
 	}
 	server.routes()
 	return server
+}
+
+func (s *Server) handlePreviewTorrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var request PreviewTorrentRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	magnet := strings.TrimSpace(request.URL)
+	content := strings.TrimSpace(request.Content)
+	if magnet != "" && content != "" {
+		writeError(w, http.StatusBadRequest, "url and content are mutually exclusive")
+		return
+	}
+	if magnet == "" && content == "" {
+		writeError(w, http.StatusBadRequest, "url or content is required")
+		return
+	}
+	if magnet != "" {
+		parsed, err := url.Parse(magnet)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "magnet") || strings.TrimSpace(parsed.Query().Get("xt")) == "" {
+			writeError(w, http.StatusBadRequest, "a valid magnet URL with xt is required")
+			return
+		}
+	}
+	if content != "" {
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil || len(decoded) == 0 {
+			writeError(w, http.StatusBadRequest, "torrent content must be valid base64")
+			return
+		}
+	}
+	request.URL = magnet
+	request.Content = content
+	job, err := s.createPreviewJob(request)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Location", "/api/v1/torrents/preview/"+url.PathEscape(job.id))
+	writeJSON(w, http.StatusAccepted, job.response())
+}
+
+func (s *Server) handlePreviewJob(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/torrents/preview/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "preview job not found")
+		return
+	}
+	s.previewMu.Lock()
+	job := s.previewJobs[id]
+	s.previewMu.Unlock()
+	if job == nil {
+		writeError(w, http.StatusNotFound, "preview job not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, job.response())
+	case http.MethodDelete:
+		s.previewMu.Lock()
+		if current := s.previewJobs[id]; current == job {
+			delete(s.previewJobs, id)
+		}
+		s.previewMu.Unlock()
+		job.cancelAndMark()
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func newPreviewJobID() (string, error) {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		return "", fmt.Errorf("generate preview job id: %w", err)
+	}
+	return hex.EncodeToString(data), nil
+}
+
+func (s *Server) createPreviewJob(request PreviewTorrentRequest) (*previewJob, error) {
+	id, err := newPreviewJobID()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &previewJob{id: id, ctx: ctx, cancel: cancel, status: previewJobQueued}
+	s.previewMu.Lock()
+	s.previewJobs[id] = job
+	s.previewMu.Unlock()
+	time.AfterFunc(previewJobRetention, func() {
+		s.previewMu.Lock()
+		if current := s.previewJobs[id]; current == job {
+			delete(s.previewJobs, id)
+		}
+		s.previewMu.Unlock()
+		job.cancel()
+	})
+	go s.runPreviewJob(job, request)
+	return job, nil
+}
+
+func (s *Server) runPreviewJob(job *previewJob, request PreviewTorrentRequest) {
+	job.markRunning()
+	var (
+		preview domain.MagnetPreview
+		err     error
+	)
+	if request.URL != "" {
+		preview, err = s.service.PreviewMagnet(job.ctx, request.URL)
+	} else {
+		preview, err = s.service.PreviewTorrent(job.ctx, request.Content)
+	}
+	job.finish(preview, err)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -151,6 +354,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/api/v1/torrents/preview", s.handlePreviewTorrent)
+	s.mux.HandleFunc("/api/v1/torrents/preview/", s.handlePreviewJob)
 	s.mux.HandleFunc("/api/v1/destinations", s.handleDestinations)
 	s.mux.HandleFunc("/api/v1/destinations/", s.handleDestinationPath)
 	s.mux.HandleFunc("/api/v1/tasks", s.handleTasks)
@@ -168,40 +372,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-func (s *Server) handlePreviewTorrent(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var request PreviewTorrentRequest
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	magnet := strings.TrimSpace(request.URL)
-	content := strings.TrimSpace(request.Content)
-	if magnet != "" && content != "" {
-		writeError(w, http.StatusBadRequest, "url and content are mutually exclusive")
-		return
-	}
-	var (
-		preview domain.MagnetPreview
-		err     error
-	)
-	if magnet != "" {
-		preview, err = s.service.PreviewMagnet(r.Context(), magnet)
-	} else if content != "" {
-		preview, err = s.service.PreviewTorrent(r.Context(), content)
-	} else {
-		writeError(w, http.StatusBadRequest, "url or content is required")
-		return
-	}
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, preview)
 }
 
 func (s *Server) handleDestinations(w http.ResponseWriter, r *http.Request) {

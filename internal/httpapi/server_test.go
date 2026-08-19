@@ -62,6 +62,19 @@ func (apiFakeDownloader) Remove(context.Context, string) error {
 	return nil
 }
 
+type blockingPreviewDownloader struct {
+	apiFakeDownloader
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (d blockingPreviewDownloader) AddTorrent(ctx context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+	close(d.started)
+	<-ctx.Done()
+	close(d.done)
+	return "", ctx.Err()
+}
+
 type apiFakeProvider struct{}
 
 func (apiFakeProvider) Transfer(context.Context, provider.TransferRequest) error { return nil }
@@ -145,6 +158,36 @@ func TestHandlerCreatesSelectedTorrentTask(t *testing.T) {
 		t.Fatalf("stored select-file option = %q, want 1,3", stored.Options["select-file"])
 	}
 }
+func waitForPreviewJob(t *testing.T, handler http.Handler, token, id string) domain.MagnetPreview {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/torrents/preview/"+id, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("preview status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var job previewJobResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+			t.Fatal(err)
+		}
+		switch job.Status {
+		case previewJobCompleted:
+			if job.Preview == nil {
+				t.Fatal("completed preview job has no preview")
+			}
+			return *job.Preview
+		case previewJobFailed, previewJobCancelled:
+			t.Fatalf("preview job failed: %q", job.Error)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("preview job did not complete")
+	return domain.MagnetPreview{}
+}
+
 func TestHandlerPreviewsMagnetMetadata(t *testing.T) {
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {
@@ -188,22 +231,94 @@ func TestHandlerPreviewsMagnetMetadata(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer secret")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("preview status = %d, body = %s", response.Code, response.Body.String())
 	}
-	var preview domain.MagnetPreview
-	if err := json.Unmarshal(response.Body.Bytes(), &preview); err != nil {
+	var job previewJobResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
 		t.Fatal(err)
 	}
+	if job.ID == "" || response.Header().Get("Location") == "" {
+		t.Fatalf("preview job response = %#v, headers = %#v", job, response.Header())
+	}
+	preview := waitForPreviewJob(t, handler, "secret", job.ID)
 	if preview.Content == "" || len(preview.Files) != 1 || preview.Files[0].Index != 1 {
 		t.Fatalf("preview = %#v", preview)
 	}
+
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/torrents/preview", strings.NewReader(`{"content":"dG9ycmVudC1jb250ZW50"}`))
 	request.Header.Set("Authorization", "Bearer secret")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("torrent preview status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	preview = waitForPreviewJob(t, handler, "secret", job.ID)
+	if len(preview.Files) != 1 || preview.Files[0].Path != "movie.mkv" {
+		t.Fatalf("torrent preview = %#v", preview)
+	}
+}
+
+func TestHandlerPreviewIsAsynchronous(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloader := blockingPreviewDownloader{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	service, err := transfer.NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": apiFakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(service, "secret", []string{"*"}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/torrents/preview", strings.NewReader(`{"content":"dG9ycmVudC1jb250ZW50"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("preview status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var job previewJobResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-downloader.started:
+	case <-time.After(time.Second):
+		t.Fatal("preview job did not start")
+	}
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status = %d", health.Code)
+	}
+
+	cancel := httptest.NewRequest(http.MethodDelete, "/api/v1/torrents/preview/"+job.ID, nil)
+	cancel.Header.Set("Authorization", "Bearer secret")
+	cancelResponse := httptest.NewRecorder()
+	handler.ServeHTTP(cancelResponse, cancel)
+	if cancelResponse.Code != http.StatusNoContent {
+		t.Fatalf("cancel status = %d, body = %s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	select {
+	case <-downloader.done:
+	case <-time.After(time.Second):
+		t.Fatal("preview job did not cancel")
 	}
 }
 func TestHandlerSetsConfiguredCORS(t *testing.T) {
