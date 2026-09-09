@@ -29,6 +29,10 @@ type Server struct {
 	allowAny    bool
 	mux         *http.ServeMux
 
+	rpcEndpoint   string
+	rpcSecret     string
+	rpcHTTPClient *http.Client
+
 	previewMu   sync.Mutex
 	previewJobs map[string]*previewJob
 }
@@ -198,11 +202,22 @@ type destinationView struct {
 }
 
 func NewServer(service *transfer.Service, token string, corsOrigins []string) *Server {
+	return newServer(service, token, "", "", corsOrigins)
+}
+
+func NewServerWithRPCProxy(service *transfer.Service, token, rpcEndpoint, rpcSecret string, corsOrigins []string) *Server {
+	return newServer(service, token, rpcEndpoint, rpcSecret, corsOrigins)
+}
+
+func newServer(service *transfer.Service, token, rpcEndpoint, rpcSecret string, corsOrigins []string) *Server {
 	server := &Server{
-		service:     service,
-		token:       token,
-		mux:         http.NewServeMux(),
-		previewJobs: make(map[string]*previewJob),
+		service:       service,
+		token:         token,
+		rpcEndpoint:   strings.TrimSpace(rpcEndpoint),
+		rpcSecret:     rpcSecret,
+		rpcHTTPClient: &http.Client{},
+		mux:           http.NewServeMux(),
+		previewJobs:   make(map[string]*previewJob),
 	}
 	for _, origin := range corsOrigins {
 		origin = strings.TrimSpace(origin)
@@ -343,7 +358,7 @@ func (s *Server) Handler() http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.URL.Path != "/healthz" && !s.authorized(r) {
+		if r.URL.Path != "/healthz" && !s.authorizedRequest(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -353,6 +368,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
+	s.mux.HandleFunc("/jsonrpc", s.handleRPC)
 	s.mux.HandleFunc("/api/v1/torrents/preview", s.handlePreviewTorrent)
 	s.mux.HandleFunc("/api/v1/torrents/preview/", s.handlePreviewJob)
 	s.mux.HandleFunc("/api/v1/destinations", s.handleDestinations)

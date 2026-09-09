@@ -63,7 +63,7 @@ func main() {
 	defer stop()
 	service.Start(ctx)
 
-	api := httpapi.NewServer(service, runtime.APIToken, runtime.Config.CORSOrigins)
+	api := httpapi.NewServerWithRPCProxy(service, runtime.APIToken, runtime.Config.Aria2.Endpoint, runtime.Aria2Secret, runtime.Config.CORSOrigins)
 	server := &http.Server{
 		Addr:              runtime.Config.ListenAddr,
 		Handler:           api.Handler(),
