@@ -22,7 +22,7 @@ type fakeDownloader struct {
 	status     func(string) aria2.DownloadStatus
 	remove     func(string) error
 	add        func(string)
-	options    func(map[string]string)
+	options    func(map[string]any)
 }
 
 func (d fakeDownloader) Remove(_ context.Context, gid string) error {
@@ -32,7 +32,7 @@ func (d fakeDownloader) Remove(_ context.Context, gid string) error {
 	return d.remove(gid)
 }
 
-func (d fakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]string) (string, error) {
+func (d fakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]any) (string, error) {
 	if d.add != nil {
 		d.add(directory)
 	}
@@ -42,7 +42,7 @@ func (d fakeDownloader) AddURI(_ context.Context, _ []string, directory string, 
 	return "gid-1", nil
 }
 
-func (d fakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
+func (d fakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]any) (string, error) {
 	if d.add != nil {
 		d.add(directory)
 	}
@@ -52,7 +52,7 @@ func (d fakeDownloader) AddTorrent(_ context.Context, _ string, directory string
 	return "gid-1", nil
 }
 
-func (d fakeDownloader) AddMetalink(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
+func (d fakeDownloader) AddMetalink(_ context.Context, _ string, directory string, _ bool, options map[string]any) (string, error) {
 	if d.add != nil {
 		d.add(directory)
 	}
@@ -117,18 +117,18 @@ func (p *fakeProvider) Transfer(ctx context.Context, request provider.TransferRe
 
 type magnetPreviewDownloader struct{}
 
-func (magnetPreviewDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, _ map[string]string) (string, error) {
+func (magnetPreviewDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, _ map[string]any) (string, error) {
 	if err := os.WriteFile(filepath.Join(directory, "abcdef.torrent"), []byte("torrent-content"), 0o640); err != nil {
 		return "", err
 	}
 	return "metadata-gid", nil
 }
 
-func (magnetPreviewDownloader) AddTorrent(_ context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+func (magnetPreviewDownloader) AddTorrent(_ context.Context, _ string, _ string, _ bool, _ map[string]any) (string, error) {
 	return "torrent-gid", nil
 }
 
-func (magnetPreviewDownloader) AddMetalink(_ context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+func (magnetPreviewDownloader) AddMetalink(_ context.Context, _ string, _ string, _ bool, _ map[string]any) (string, error) {
 	return "metalink-gid", nil
 }
 
@@ -253,10 +253,10 @@ func TestServiceSelectsRequestedTorrentFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer taskStore.Close()
-	var gotOptions map[string]string
+	var gotOptions map[string]any
 	service, err := NewService(
 		taskStore,
-		fakeDownloader{options: func(options map[string]string) { gotOptions = options }},
+		fakeDownloader{options: func(options map[string]any) { gotOptions = options }},
 		map[string]provider.Provider{},
 		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
 		"drive",

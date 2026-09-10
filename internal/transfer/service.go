@@ -47,7 +47,7 @@ var (
 	errTaskDeleting       = errors.New("task is being deleted")
 )
 
-func sanitizeOptions(options map[string]any) map[string]string {
+func sanitizeOptions(options map[string]any) map[string]any {
 	protected := map[string]struct{}{
 		"dir":                     {},
 		"input-file":              {},
@@ -57,7 +57,7 @@ func sanitizeOptions(options map[string]any) map[string]string {
 		"on-download-error":       {},
 		"on-bt-download-complete": {},
 	}
-	result := make(map[string]string, len(options))
+	result := make(map[string]any, len(options))
 	for key, value := range options {
 		key = strings.TrimSpace(key)
 		if key == "" {
@@ -66,14 +66,58 @@ func sanitizeOptions(options map[string]any) map[string]string {
 		if _, blocked := protected[strings.ToLower(key)]; blocked {
 			continue
 		}
-		if text, ok := optionValue(value); ok {
-			result[key] = text
+		if normalized, ok := optionValue(key, value); ok {
+			result[key] = normalized
 		}
 	}
 	return result
 }
 
-func applySelectFiles(taskType string, selectFiles []int, options map[string]string) error {
+func optionValue(key string, value any) (any, bool) {
+	if strings.EqualFold(key, "header") || strings.EqualFold(key, "index-out") {
+		if values, ok := optionStringSlice(value); ok {
+			return values, true
+		}
+	}
+	return optionString(value)
+}
+
+func optionString(value any) (string, bool) {
+	switch value := value.(type) {
+	case string:
+		return value, true
+	case bool:
+		return strconv.FormatBool(value), true
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	case json.Number:
+		return value.String(), true
+	default:
+		data, err := json.Marshal(value)
+		return string(data), err == nil
+	}
+}
+
+func optionStringSlice(value any) ([]string, bool) {
+	switch values := value.(type) {
+	case []string:
+		return append([]string(nil), values...), true
+	case []any:
+		result := make([]string, len(values))
+		for index, value := range values {
+			text, ok := optionString(value)
+			if !ok {
+				return nil, false
+			}
+			result[index] = text
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func applySelectFiles(taskType string, selectFiles []int, options map[string]any) error {
 	if len(selectFiles) == 0 {
 		return nil
 	}
@@ -104,22 +148,6 @@ func applySelectFiles(taskType string, selectFiles []int, options map[string]str
 	}
 	options["select-file"] = strings.Join(values, ",")
 	return nil
-}
-
-func optionValue(value any) (string, bool) {
-	switch value := value.(type) {
-	case string:
-		return value, true
-	case bool:
-		return strconv.FormatBool(value), true
-	case float64:
-		return strconv.FormatFloat(value, 'f', -1, 64), true
-	case json.Number:
-		return value.String(), true
-	default:
-		data, err := json.Marshal(value)
-		return string(data), err == nil
-	}
 }
 
 type taskRun struct {
@@ -303,11 +331,10 @@ func (s *Service) PreviewMagnet(ctx context.Context, magnet string) (domain.Magn
 	if err != nil {
 		return domain.MagnetPreview{}, fmt.Errorf("create magnet metadata directory: %w", err)
 	}
-	gid, err := s.downloader.AddURI(previewCtx, []string{magnet}, metadataDir, false, map[string]string{
+	gid, err := s.downloader.AddURI(previewCtx, []string{magnet}, metadataDir, false, map[string]any{
 		"bt-metadata-only": "true",
 		"bt-save-metadata": "true",
 		"pause-metadata":   "true",
-		"file-allocation":  "none",
 	})
 	if err != nil {
 		_ = os.RemoveAll(metadataDir)
@@ -360,11 +387,10 @@ func (s *Service) previewTorrentFiles(ctx context.Context, content []byte) ([]do
 	if err != nil {
 		return nil, fmt.Errorf("create torrent preview directory: %w", err)
 	}
-	gid, err := s.downloader.AddTorrent(ctx, base64.StdEncoding.EncodeToString(content), directory, true, map[string]string{
+	gid, err := s.downloader.AddTorrent(ctx, base64.StdEncoding.EncodeToString(content), directory, true, map[string]any{
 		"file-allocation": "none",
 	})
 	if err != nil {
-		_ = os.RemoveAll(directory)
 		return nil, fmt.Errorf("inspect torrent metadata: %w", err)
 	}
 	defer s.cleanupPreview(gid, directory)

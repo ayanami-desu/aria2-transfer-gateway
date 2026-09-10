@@ -70,9 +70,9 @@ func decodeJSONBool(data json.RawMessage) (bool, error) {
 var ErrGIDNotFound = errors.New("aria2 GID not found")
 
 type Downloader interface {
-	AddURI(ctx context.Context, urls []string, dir string, pause bool, options map[string]string) (string, error)
-	AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error)
-	AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error)
+	AddURI(ctx context.Context, urls []string, dir string, pause bool, options map[string]any) (string, error)
+	AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]any) (string, error)
+	AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]any) (string, error)
 	GetFiles(ctx context.Context, gid string) ([]DownloadFile, error)
 	GetStatus(ctx context.Context, gid string) (DownloadStatus, error)
 	GetFollowedBy(ctx context.Context, gid string) ([]string, error)
@@ -110,15 +110,15 @@ func NewClient(endpoint, secret string, httpClient *http.Client) *Client {
 	return &Client{endpoint: endpoint, secret: secret, http: httpClient}
 }
 
-func (c *Client) AddURI(ctx context.Context, urls []string, dir string, pause bool, options map[string]string) (string, error) {
+func (c *Client) AddURI(ctx context.Context, urls []string, dir string, pause bool, options map[string]any) (string, error) {
 	return c.add(ctx, "aria2.addUri", []any{urls}, dir, pause, options)
 }
 
-func (c *Client) AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error) {
+func (c *Client) AddTorrent(ctx context.Context, content, dir string, pause bool, options map[string]any) (string, error) {
 	return c.add(ctx, "aria2.addTorrent", []any{content, []string{}}, dir, pause, options)
 }
 
-func (c *Client) AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]string) (string, error) {
+func (c *Client) AddMetalink(ctx context.Context, content, dir string, pause bool, options map[string]any) (string, error) {
 	return c.add(ctx, "aria2.addMetalink", []any{content}, dir, pause, options)
 }
 
@@ -151,7 +151,7 @@ func (c *Client) Remove(ctx context.Context, gid string) error {
 	return c.call(ctx, "aria2.forceRemove", []any{gid}, nil)
 }
 
-func (c *Client) add(ctx context.Context, method string, params []any, dir string, pause bool, options map[string]string) (string, error) {
+func (c *Client) add(ctx context.Context, method string, params []any, dir string, pause bool, options map[string]any) (string, error) {
 	var gid string
 	if err := c.call(ctx, method, append(params, buildOptions(dir, pause, options)), &gid); err != nil {
 		return "", err
@@ -159,8 +159,8 @@ func (c *Client) add(ctx context.Context, method string, params []any, dir strin
 	return gid, nil
 }
 
-func buildOptions(dir string, pause bool, options map[string]string) map[string]string {
-	result := make(map[string]string, len(options)+2)
+func buildOptions(dir string, pause bool, options map[string]any) map[string]any {
+	result := make(map[string]any, len(options)+2)
 	for key, value := range options {
 		result[key] = value
 	}

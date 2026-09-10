@@ -500,11 +500,32 @@ func cloneTask(task domain.Task) domain.Task {
 		task.FinalFiles = cloned
 	}
 	if task.Options != nil {
-		cloned := make(map[string]string, len(task.Options))
+		cloned := make(map[string]any, len(task.Options))
 		for key, value := range task.Options {
-			cloned[key] = value
+			cloned[key] = cloneOptionValue(value)
 		}
 		task.Options = cloned
 	}
 	return task
+}
+
+func cloneOptionValue(value any) any {
+	switch value := value.(type) {
+	case []string:
+		return append([]string(nil), value...)
+	case []any:
+		cloned := make([]any, len(value))
+		for index, item := range value {
+			cloned[index] = cloneOptionValue(item)
+		}
+		return cloned
+	case map[string]any:
+		cloned := make(map[string]any, len(value))
+		for key, item := range value {
+			cloned[key] = cloneOptionValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
 }

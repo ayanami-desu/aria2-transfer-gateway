@@ -21,7 +21,7 @@ func TestStorePersistsAndUpdatesTasks(t *testing.T) {
 		TaskName:      "Example Name",
 		Type:          "urls",
 		URLs:          []string{"https://example.test/file"},
-		Options:       map[string]string{"out": "file"},
+		Options:       map[string]any{"out": "file"},
 		DestinationID: "drive",
 		TargetPath:    "/movies", DownloadPath: "/tmp/task-1", FinalFiles: []string{"file"},
 		Status:    domain.StatusDownloading,

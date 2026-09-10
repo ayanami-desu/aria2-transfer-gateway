@@ -48,6 +48,16 @@ func TestClientAddURI(t *testing.T) {
 	}
 }
 
+func TestBuildOptionsPreservesRepeatedValues(t *testing.T) {
+	options := buildOptions("/downloads/task-1", false, map[string]any{
+		"header": []string{"Cookie: account=active", "User-Agent: aria2"},
+	})
+	headers, ok := options["header"].([]string)
+	if !ok || len(headers) != 2 || headers[0] != "Cookie: account=active" || headers[1] != "User-Agent: aria2" {
+		t.Fatalf("headers = %#v", options["header"])
+	}
+}
+
 func TestClientAddTorrent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -77,7 +87,7 @@ func TestClientAddTorrent(t *testing.T) {
 		if len(uris) != 0 {
 			t.Errorf("uris = %#v, want empty", uris)
 		}
-		var options map[string]string
+		var options map[string]any
 		if err := json.Unmarshal(request.Params[3], &options); err != nil {
 			t.Fatal(err)
 		}

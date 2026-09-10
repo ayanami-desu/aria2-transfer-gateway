@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"aria2-transfer-gateway/internal/aria2"
 	"aria2-transfer-gateway/internal/domain"
 	"aria2-transfer-gateway/internal/provider"
 	"aria2-transfer-gateway/internal/store"
@@ -15,6 +17,10 @@ import (
 )
 
 func newRPCService(t *testing.T) (*transfer.Service, *store.Store) {
+	return newRPCServiceWithDownloader(t, apiFakeDownloader{})
+}
+
+func newRPCServiceWithDownloader(t *testing.T, downloader aria2.Downloader) (*transfer.Service, *store.Store) {
 	t.Helper()
 	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {
@@ -22,7 +28,7 @@ func newRPCService(t *testing.T) (*transfer.Service, *store.Store) {
 	}
 	service, err := transfer.NewService(
 		taskStore,
-		apiFakeDownloader{},
+		downloader,
 		map[string]provider.Provider{"fake": apiFakeProvider{}},
 		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
 		"drive",
@@ -81,6 +87,43 @@ func TestRPCProxyCreatesManagedURIAndUsesGatewayOptions(t *testing.T) {
 	}
 	if _, ok := task.Options["pause"]; ok {
 		t.Fatal("pause was not normalized into the task")
+	}
+}
+
+func TestRPCProxyPreservesRepeatedHTTPOptions(t *testing.T) {
+	var received map[string]any
+	downloader := apiFakeDownloader{
+		addURI: func(_ string, options map[string]any) (string, error) {
+			received = options
+			return "gid-gofile", nil
+		},
+	}
+	service, taskStore := newRPCServiceWithDownloader(t, downloader)
+	defer taskStore.Close()
+	handler := NewServerWithRPCProxy(
+		service,
+		"gateway-secret",
+		"http://127.0.0.1:1/jsonrpc",
+		"aria-secret",
+		[]string{"*"},
+	).Handler()
+
+	request := httptest.NewRequest(http.MethodPost, "/jsonrpc", strings.NewReader(`{
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"aria2.addUri",
+        "params":["token:aria-secret",["https://gofile.example/download/uuid"],{"header":["Cookie: account=active","User-Agent: aria2"]}]
+    }`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("RPC status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !reflect.DeepEqual(received["header"], []string{"Cookie: account=active", "User-Agent: aria2"}) {
+		t.Fatalf("forwarded headers = %#v", received["header"])
+	}
+	if len(service.List()) != 1 || service.List()[0].GID != "gid-gofile" {
+		t.Fatalf("managed task = %#v", service.List())
 	}
 }
 

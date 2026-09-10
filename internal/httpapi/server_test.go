@@ -20,26 +20,26 @@ import (
 )
 
 type apiFakeDownloader struct {
-	addURI     func(string, map[string]string) (string, error)
-	addTorrent func(string, map[string]string) (string, error)
+	addURI     func(string, map[string]any) (string, error)
+	addTorrent func(string, map[string]any) (string, error)
 	getFiles   func(string) ([]aria2.DownloadFile, error)
 }
 
-func (d apiFakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]string) (string, error) {
+func (d apiFakeDownloader) AddURI(_ context.Context, _ []string, directory string, _ bool, options map[string]any) (string, error) {
 	if d.addURI != nil {
 		return d.addURI(directory, options)
 	}
 	return "gid-api", nil
 }
 
-func (d apiFakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]string) (string, error) {
+func (d apiFakeDownloader) AddTorrent(_ context.Context, _ string, directory string, _ bool, options map[string]any) (string, error) {
 	if d.addTorrent != nil {
 		return d.addTorrent(directory, options)
 	}
 	return "gid-api", nil
 }
 
-func (d apiFakeDownloader) AddMetalink(context.Context, string, string, bool, map[string]string) (string, error) {
+func (d apiFakeDownloader) AddMetalink(context.Context, string, string, bool, map[string]any) (string, error) {
 	return "gid-api", nil
 }
 
@@ -68,7 +68,7 @@ type blockingPreviewDownloader struct {
 	done    chan struct{}
 }
 
-func (d blockingPreviewDownloader) AddTorrent(ctx context.Context, _ string, _ string, _ bool, _ map[string]string) (string, error) {
+func (d blockingPreviewDownloader) AddTorrent(ctx context.Context, _ string, _ string, _ bool, _ map[string]any) (string, error) {
 	close(d.started)
 	<-ctx.Done()
 	close(d.done)
@@ -195,7 +195,7 @@ func TestHandlerPreviewsMagnetMetadata(t *testing.T) {
 	}
 	defer taskStore.Close()
 	downloader := apiFakeDownloader{
-		addURI: func(directory string, options map[string]string) (string, error) {
+		addURI: func(directory string, options map[string]any) (string, error) {
 			if options["bt-metadata-only"] != "true" || options["bt-save-metadata"] != "true" {
 				t.Fatalf("metadata options = %#v", options)
 			}
@@ -204,7 +204,7 @@ func TestHandlerPreviewsMagnetMetadata(t *testing.T) {
 			}
 			return "metadata-gid", nil
 		},
-		addTorrent: func(string, map[string]string) (string, error) {
+		addTorrent: func(string, map[string]any) (string, error) {
 			return "torrent-gid", nil
 		},
 		getFiles: func(gid string) ([]aria2.DownloadFile, error) {

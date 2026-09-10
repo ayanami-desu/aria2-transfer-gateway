@@ -43,25 +43,25 @@ type MagnetPreview struct {
 }
 
 type Task struct {
-	ID            string            `json:"id"`
-	GID           string            `json:"gid,omitempty"`
-	TaskName      string            `json:"task_name,omitempty"`
-	Type          string            `json:"type"`
-	URLs          []string          `json:"urls,omitempty"`
-	Content       string            `json:"content,omitempty"`
-	Options       map[string]string `json:"options,omitempty"`
-	DestinationID string            `json:"destination_id"`
-	TargetPath    string            `json:"target_path"`
-	DownloadPath  string            `json:"download_path"`
-	FinalFiles    []string          `json:"final_files"`
-	Status        string            `json:"status"`
-	Error         string            `json:"error,omitempty"`
-	RetryCount    int               `json:"retry_count"`
-	Cleanup       bool              `json:"cleanup"`
-	Pause         bool              `json:"pause"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
-	CompletedAt   time.Time         `json:"completed_at,omitempty"`
+	ID            string         `json:"id"`
+	GID           string         `json:"gid,omitempty"`
+	TaskName      string         `json:"task_name,omitempty"`
+	Type          string         `json:"type"`
+	URLs          []string       `json:"urls,omitempty"`
+	Content       string         `json:"content,omitempty"`
+	Options       map[string]any `json:"options,omitempty"`
+	DestinationID string         `json:"destination_id"`
+	TargetPath    string         `json:"target_path"`
+	DownloadPath  string         `json:"download_path"`
+	FinalFiles    []string       `json:"final_files"`
+	Status        string         `json:"status"`
+	Error         string         `json:"error,omitempty"`
+	RetryCount    int            `json:"retry_count"`
+	Cleanup       bool           `json:"cleanup"`
+	Pause         bool           `json:"pause"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	CompletedAt   time.Time      `json:"completed_at,omitempty"`
 }
 
 type TaskView struct {
@@ -119,8 +119,8 @@ func (t Task) View(destinationName string) TaskView {
 
 func taskFileNames(task Task) []string {
 	values := append([]string(nil), task.FinalFiles...)
-	if len(values) == 0 && task.Options["out"] != "" {
-		values = append(values, task.Options["out"])
+	if output, ok := task.Options["out"].(string); ok && output != "" {
+		values = append(values, output)
 	}
 	if len(values) == 0 {
 		for _, rawURL := range task.URLs {
