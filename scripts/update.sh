@@ -28,6 +28,7 @@ check_port() {
 update_compose() {
   cd "$1"
   docker compose pull
+  docker compose build aria2
   docker compose up -d --no-build --force-recreate
 }
 
@@ -62,6 +63,7 @@ set -eu
 command -v docker >/dev/null 2>&1 || { printf 'docker is required on remote host\\n' >&2; exit 69; }
 cd '$deploy_path'
 docker compose pull
+docker compose build aria2
 docker compose up -d --no-build --force-recreate
 "
 printf 'images updated and services restarted\n'

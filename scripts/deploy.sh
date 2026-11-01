@@ -35,6 +35,7 @@ check_port() {
 run_compose() {
   cd "$1"
   docker compose pull
+  docker compose build aria2
   docker compose up -d --no-build --force-recreate
 }
 
@@ -83,6 +84,7 @@ if [ -f \"\$tmp_dir/config.yaml.backup\" ]; then
 fi
 cd '$deploy_path'
 docker compose pull
+docker compose build aria2
 docker compose up -d --no-build --force-recreate
 "
 printf 'deployment complete\n'
