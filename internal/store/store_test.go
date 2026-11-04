@@ -194,3 +194,41 @@ func TestStorePersistsDestinationSettings(t *testing.T) {
 		t.Fatalf("stored secrets = token %q, proxy %q", stored.Token, stored.Proxy)
 	}
 }
+
+func TestStoreTaskSearchUsesTaskNameWithoutContentBlobs(t *testing.T) {
+	taskStore, err := Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	now := time.Now().UTC()
+	if err := taskStore.Create(domain.Task{
+		ID:            "task-search",
+		GID:           "gid-search",
+		TaskName:      "searchable task name",
+		Type:          "urls",
+		Content:       "encoded-content-only",
+		Options:       map[string]any{"header": "options-only"},
+		DestinationID: "drive",
+		TargetPath:    "/",
+		Status:        domain.StatusDownloading,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := taskStore.ListFiltered(TaskFilter{Query: "searchable task name"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].ID != "task-search" {
+		t.Fatalf("task-name search result = %#v", found)
+	}
+	contentMatches, err := taskStore.ListFiltered(TaskFilter{Query: "encoded-content-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contentMatches) != 0 {
+		t.Fatalf("content blob unexpectedly matched task search: %#v", contentMatches)
+	}
+}

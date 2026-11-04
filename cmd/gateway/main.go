@@ -61,7 +61,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	service.Start(ctx)
+	if err := service.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
 
 	api := httpapi.NewServerWithRPCProxy(service, runtime.APIToken, runtime.Config.Aria2.Endpoint, runtime.Aria2Secret, runtime.Config.CORSOrigins)
 	server := &http.Server{
@@ -69,17 +71,25 @@ func main() {
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
+		api.Close()
+		close(shutdownDone)
 	}()
 
 	log.Printf("aria2 transfer gateway listening on %s", runtime.Config.ListenAddr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		log.Printf("HTTP server stopped: %v", err)
 	}
+	if ctx.Err() != nil {
+		<-shutdownDone
+	}
+	api.Close()
+	service.Wait()
 }
 
 func configureAria2Hooks(client *aria2.Client, cfg config.Aria2Config) {

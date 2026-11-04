@@ -183,6 +183,7 @@ type destinationRequest struct {
 	Token        string `json:"token"`
 	Proxy        string `json:"proxy"`
 	ClearProxy   bool   `json:"clear_proxy"`
+	ClearToken   bool   `json:"clear_token"`
 }
 
 type destinationView struct {
@@ -365,6 +366,18 @@ func (s *Server) Handler() http.Handler {
 		s.mux.ServeHTTP(w, r)
 	})
 }
+func (s *Server) Close() {
+	s.previewMu.Lock()
+	jobs := make([]*previewJob, 0, len(s.previewJobs))
+	for id, job := range s.previewJobs {
+		delete(s.previewJobs, id)
+		jobs = append(jobs, job)
+	}
+	s.previewMu.Unlock()
+	for _, job := range jobs {
+		job.cancelAndMark()
+	}
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
@@ -437,7 +450,7 @@ func (s *Server) handleDestinationPath(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		destination, err := s.service.UpdateDestination(id, request.destination(), request.ClearProxy)
+		destination, err := s.service.UpdateDestination(id, request.destination(), request.ClearProxy, request.ClearToken)
 		if err != nil {
 			writeServiceError(w, err)
 			return

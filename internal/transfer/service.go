@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -163,10 +164,17 @@ type Service struct {
 	destinations         map[string]domain.Destination
 	defaultDestinationID string
 	downloadRoot         string
-	jobs                 chan string
 	workerCount          int
 	taskRunsMu           sync.Mutex
 	taskRuns             map[string]*taskRun
+	jobsMu               sync.Mutex
+	jobsCond             *sync.Cond
+	queuedJobs           map[string]struct{}
+	lifecycleMu          sync.Mutex
+	started              bool
+	stopped              bool
+	workerCancel         context.CancelFunc
+	workers              sync.WaitGroup
 }
 
 func NewService(taskStore *store.Store, downloader aria2.Downloader, providers map[string]provider.Provider, destinations []domain.Destination, defaultDestinationID string, downloadRoot string, workerCount int) (*Service, error) {
@@ -200,30 +208,92 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 			return nil, fmt.Errorf("default destination %q not found", defaultDestinationID)
 		}
 	}
-	return &Service{
+	service := &Service{
 		store:                taskStore,
 		downloader:           downloader,
 		providers:            providers,
 		destinations:         destinationMap,
 		defaultDestinationID: defaultDestinationID,
 		downloadRoot:         absoluteDownloadRoot,
-		jobs:                 make(chan string, workerCount*8),
 		workerCount:          workerCount,
 		taskRuns:             make(map[string]*taskRun),
-	}, nil
+		queuedJobs:           make(map[string]struct{}),
+	}
+	service.jobsCond = sync.NewCond(&service.jobsMu)
+	return service, nil
 }
 
-func (s *Service) Start(ctx context.Context) {
-	deletingTasks, _ := s.store.ListFiltered(store.TaskFilter{Statuses: []string{domain.StatusDeleting}})
+func (s *Service) Start(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	if s.started {
+		s.lifecycleMu.Unlock()
+		return nil
+	}
+	s.started = true
+	s.lifecycleMu.Unlock()
+
+	deletingTasks, err := s.store.ListFiltered(store.TaskFilter{Statuses: []string{domain.StatusDeleting}})
+	if err != nil {
+		s.lifecycleMu.Lock()
+		s.started = false
+		s.lifecycleMu.Unlock()
+		return fmt.Errorf("list deleting tasks on startup: %w", err)
+	}
 	for _, task := range deletingTasks {
-		_ = s.deleteTask(ctx, task)
+		if err := s.deleteTask(ctx, task); err != nil {
+			s.lifecycleMu.Lock()
+			s.started = false
+			s.lifecycleMu.Unlock()
+			return fmt.Errorf("recover deleting task %q: %w", task.ID, err)
+		}
 	}
-	for _, task := range s.store.PendingTransfers() {
-		_ = s.enqueue(task.ID)
+	pendingTasks, err := s.store.PendingTransfers()
+	if err != nil {
+		s.lifecycleMu.Lock()
+		s.started = false
+		s.lifecycleMu.Unlock()
+		return fmt.Errorf("list pending transfers on startup: %w", err)
 	}
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	s.lifecycleMu.Lock()
+	s.workerCancel = cancel
+	s.lifecycleMu.Unlock()
 	for i := 0; i < s.workerCount; i++ {
-		go s.worker(ctx)
+		s.workers.Add(1)
+		go s.worker(workerCtx)
 	}
+	go func() {
+		<-workerCtx.Done()
+		s.jobsMu.Lock()
+		s.jobsCond.Broadcast()
+		s.jobsMu.Unlock()
+	}()
+	for _, task := range pendingTasks {
+		if err := s.enqueue(task.ID); err != nil {
+			s.Wait()
+			return fmt.Errorf("enqueue pending transfer %q: %w", task.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) Wait() {
+	s.lifecycleMu.Lock()
+	if !s.started || s.stopped {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.stopped = true
+	cancel := s.workerCancel
+	s.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.jobsMu.Lock()
+	s.jobsCond.Broadcast()
+	s.jobsMu.Unlock()
+	s.workers.Wait()
 }
 
 func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, error) {
@@ -284,7 +354,15 @@ func (s *Service) Create(ctx context.Context, input TaskInput) (domain.Task, err
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	if err := s.store.Create(task); err != nil {
+	s.destinationsMu.Lock()
+	if _, exists := s.destinations[destination.ID]; !exists {
+		s.destinationsMu.Unlock()
+		_ = os.RemoveAll(downloadPath)
+		return domain.Task{}, fmt.Errorf("destination %q not found", destination.ID)
+	}
+	err = s.store.Create(task)
+	s.destinationsMu.Unlock()
+	if err != nil {
 		_ = os.RemoveAll(downloadPath)
 		return domain.Task{}, fmt.Errorf("create task: %w", err)
 	}
@@ -387,6 +465,9 @@ func (s *Service) previewTorrentFiles(ctx context.Context, content []byte) ([]do
 	if err != nil {
 		return nil, fmt.Errorf("create torrent preview directory: %w", err)
 	}
+	defer func() {
+		_ = os.RemoveAll(directory)
+	}()
 	gid, err := s.downloader.AddTorrent(ctx, base64.StdEncoding.EncodeToString(content), directory, true, map[string]any{
 		"file-allocation": "none",
 	})
@@ -797,7 +878,10 @@ func (s *Service) HandleStopped(gid, reason string) error {
 	if err != nil {
 		return err
 	}
-	if task.Status == domain.StatusCompleted || task.Status == domain.StatusDeleting {
+	if task.Status == domain.StatusCompleted ||
+		task.Status == domain.StatusTransferPending ||
+		task.Status == domain.StatusTransferring ||
+		task.Status == domain.StatusDeleting {
 		return nil
 	}
 	if strings.TrimSpace(reason) == "" {
@@ -1145,22 +1229,47 @@ func taskNameFromAria2Path(downloadPath, filePath string) string {
 }
 
 func (s *Service) enqueue(id string) error {
-	select {
-	case s.jobs <- id:
-		return nil
-	default:
-		return errors.New("transfer queue is full")
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("task id is required")
 	}
+	s.lifecycleMu.Lock()
+	stopped := s.stopped
+	s.lifecycleMu.Unlock()
+	if stopped {
+		return errors.New("transfer service is stopped")
+	}
+	s.jobsMu.Lock()
+	if _, exists := s.queuedJobs[id]; !exists {
+		s.queuedJobs[id] = struct{}{}
+	}
+	s.jobsCond.Signal()
+	s.jobsMu.Unlock()
+	return nil
 }
 
 func (s *Service) worker(ctx context.Context) {
+	defer s.workers.Done()
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case id := <-s.jobs:
-			s.runTransfer(ctx, id)
+		s.jobsMu.Lock()
+		for len(s.queuedJobs) == 0 && ctx.Err() == nil {
+			s.jobsCond.Wait()
 		}
+		if ctx.Err() != nil {
+			s.jobsMu.Unlock()
+			return
+		}
+		if len(s.queuedJobs) == 0 {
+			s.jobsMu.Unlock()
+			return
+		}
+		var id string
+		for id = range s.queuedJobs {
+			delete(s.queuedJobs, id)
+			break
+		}
+		s.jobsMu.Unlock()
+		s.runTransfer(ctx, id)
 	}
 }
 
@@ -1285,15 +1394,39 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 	if s.shouldStopTransfer(transferCtx, id) {
 		return
 	}
-	_, _ = s.store.Update(id, func(current *domain.Task) error {
-		if current.Status == domain.StatusDeleting {
-			return errTaskDeleting
+	if err := s.markCompleted(transferCtx, id); err != nil && !errors.Is(err, errTaskDeleting) {
+		log.Printf("task %q uploaded successfully but final status update failed: %v", id, err)
+	}
+}
+func (s *Service) markCompleted(ctx context.Context, id string) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = s.store.Update(id, func(current *domain.Task) error {
+			if current.Status == domain.StatusDeleting {
+				return errTaskDeleting
+			}
+			current.Status = domain.StatusCompleted
+			current.Error = ""
+			current.CompletedAt = time.Now().UTC()
+			return nil
+		})
+		if err == nil || errors.Is(err, errTaskDeleting) {
+			return err
 		}
-		current.Status = domain.StatusCompleted
-		current.Error = ""
-		current.CompletedAt = time.Now().UTC()
-		return nil
-	})
+		if attempt == 2 {
+			break
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func (s *Service) markFailed(id string, transferErr error) {

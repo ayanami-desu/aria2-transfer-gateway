@@ -98,11 +98,6 @@ type rpcResponse struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
-type versionResult struct {
-	Version        string   `json:"version"`
-	EnabledFeature []string `json:"enabledFeatures"`
-}
-
 func NewClient(endpoint, secret string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
@@ -169,18 +164,6 @@ func buildOptions(dir string, pause bool, options map[string]any) map[string]any
 		result["pause"] = "true"
 	}
 	return result
-}
-
-func (c *Client) GetVersion(ctx context.Context) (versionResult, error) {
-	var result versionResult
-	if err := c.call(ctx, "aria2.getVersion", nil, &result); err != nil {
-		return versionResult{}, err
-	}
-	return result, nil
-}
-
-func (c *Client) SaveSession(ctx context.Context) error {
-	return c.call(ctx, "aria2.saveSession", nil, nil)
 }
 
 func (c *Client) ChangeGlobalOption(ctx context.Context, options map[string]string) error {

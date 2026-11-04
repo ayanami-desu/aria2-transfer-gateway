@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -1391,5 +1392,304 @@ func TestServicePopulatesTaskNameFromAria2Files(t *testing.T) {
 	}
 	if stored.TaskName != "Album" {
 		t.Fatalf("stored task name = %q, want Album", stored.TaskName)
+	}
+}
+
+func TestServiceHandleStoppedPreservesTransferStates(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, status := range []string{
+		domain.StatusCompleted,
+		domain.StatusTransferPending,
+		domain.StatusTransferring,
+		domain.StatusDeleting,
+	} {
+		task := domain.Task{
+			ID:            "stopped-" + status,
+			GID:           "gid-" + status,
+			DestinationID: "drive",
+			Status:        status,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		if err := taskStore.Create(task); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.HandleStopped(task.GID, "aria2 completed"); err != nil {
+			t.Fatalf("HandleStopped(%s): %v", status, err)
+		}
+		got, err := taskStore.Get(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != status {
+			t.Fatalf("status after stopped hook for %s = %q, want %q", status, got.Status, status)
+		}
+	}
+}
+
+func TestServiceDispatchesAllPendingTransfers(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloadRoot := filepath.Join(t.TempDir(), "download")
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{"fake": &fakeProvider{}},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		downloadRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for index := range 20 {
+		id := fmt.Sprintf("pending-%02d", index)
+		downloadPath := filepath.Join(downloadRoot, id)
+		if err := os.MkdirAll(downloadPath, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := taskStore.Create(domain.Task{
+			ID:            id,
+			GID:           "gid-" + id,
+			DestinationID: "drive",
+			TargetPath:    "/",
+			DownloadPath:  downloadPath,
+			FinalFiles:    []string{"file.bin"},
+			Status:        domain.StatusTransferPending,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := service.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer service.Wait()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		tasks, err := taskStore.ListFiltered(store.TaskFilter{Statuses: []string{domain.StatusCompleted}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) == 20 {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("completed %d of 20 pending transfers", len(tasks))
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestServiceWaitStopsWorkersBeforeStoreClose(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloadRoot := filepath.Join(t.TempDir(), "download")
+	if err := os.MkdirAll(filepath.Join(downloadRoot, "shutdown-task"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	providerStarted := make(chan struct{})
+	providerCancelled := make(chan struct{})
+	serviceProvider := &fakeProvider{
+		started:   providerStarted,
+		cancelled: providerCancelled,
+		release:   make(chan struct{}),
+	}
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{"fake": serviceProvider},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		downloadRoot,
+		1,
+	)
+	if err != nil {
+		taskStore.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := taskStore.Create(domain.Task{
+		ID:            "shutdown-task",
+		GID:           "gid-shutdown-task",
+		DestinationID: "drive",
+		TargetPath:    "/",
+		DownloadPath:  filepath.Join(downloadRoot, "shutdown-task"),
+		FinalFiles:    []string{"file.bin"},
+		Status:        domain.StatusTransferPending,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		taskStore.Close()
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := service.Start(ctx); err != nil {
+		taskStore.Close()
+		t.Fatal(err)
+	}
+	select {
+	case <-providerStarted:
+	case <-time.After(2 * time.Second):
+		service.Wait()
+		taskStore.Close()
+		t.Fatal("transfer worker did not start")
+	}
+	waitDone := make(chan struct{})
+	go func() {
+		service.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-providerCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer worker was not cancelled")
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("service.Wait did not wait for transfer worker")
+	}
+	if err := taskStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServiceCleansFailedTorrentPreview(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	downloadRoot := filepath.Join(t.TempDir(), "download")
+	service, err := NewService(
+		taskStore,
+		failingTorrentDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"drive",
+		downloadRoot,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreviewTorrent(context.Background(), base64.StdEncoding.EncodeToString([]byte("torrent"))); err == nil {
+		t.Fatal("PreviewTorrent succeeded with failing aria2 add")
+	}
+	matches, err := filepath.Glob(filepath.Join(downloadRoot, ".torrent-preview-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed preview left temporary directories: %v", matches)
+	}
+}
+
+type failingTorrentDownloader struct{}
+
+func (failingTorrentDownloader) AddURI(context.Context, []string, string, bool, map[string]any) (string, error) {
+	return "", errors.New("not implemented")
+}
+
+func (failingTorrentDownloader) AddTorrent(context.Context, string, string, bool, map[string]any) (string, error) {
+	return "", errors.New("add torrent failed")
+}
+
+func (failingTorrentDownloader) AddMetalink(context.Context, string, string, bool, map[string]any) (string, error) {
+	return "", errors.New("not implemented")
+}
+
+func (failingTorrentDownloader) GetFiles(context.Context, string) ([]aria2.DownloadFile, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (failingTorrentDownloader) GetStatus(context.Context, string) (aria2.DownloadStatus, error) {
+	return aria2.DownloadStatus{}, errors.New("not implemented")
+}
+
+func (failingTorrentDownloader) GetFollowedBy(context.Context, string) ([]string, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (failingTorrentDownloader) Remove(context.Context, string) error {
+	return nil
+}
+
+func TestServiceCanClearDestinationToken(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	service, err := NewService(
+		taskStore,
+		fakeDownloader{},
+		map[string]provider.Provider{},
+		[]domain.Destination{{
+			ID:       "drive",
+			Name:     "Drive",
+			Provider: "openlist",
+			Endpoint: "https://files.example.test",
+			Mount:    "/",
+			Token:    "secret-token",
+		}},
+		"drive",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.UpdateDestination("drive", domain.Destination{
+		Name:     "Drive",
+		Provider: "openlist",
+		Endpoint: "https://files.example.test",
+		Mount:    "/",
+	}, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Token != "" {
+		t.Fatalf("updated token = %q, want empty", updated.Token)
+	}
+	stored, err := taskStore.GetDestination("drive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Token != "" {
+		t.Fatalf("stored token = %q, want empty", stored.Token)
 	}
 }

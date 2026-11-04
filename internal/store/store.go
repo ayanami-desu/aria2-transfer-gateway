@@ -211,11 +211,10 @@ func (s *Store) Update(id string, fn func(*domain.Task) error) (domain.Task, err
 	return cloneTask(task), nil
 }
 
-func (s *Store) PendingTransfers() []domain.Task {
-	tasks, _ := s.ListFiltered(TaskFilter{
+func (s *Store) PendingTransfers() ([]domain.Task, error) {
+	return s.ListFiltered(TaskFilter{
 		Statuses: []string{domain.StatusTransferPending, domain.StatusTransferring},
 	})
-	return tasks
 }
 
 func (s *Store) initialize() error {
@@ -346,7 +345,7 @@ func buildListQuery(filter TaskFilter) (string, []any) {
 		args = append(args, destinationID)
 	}
 	if search := strings.TrimSpace(filter.Query); search != "" {
-		conditions = append(conditions, "LOWER(id || ' ' || gid || ' ' || type || ' ' || destination_id || ' ' || target_path || ' ' || error || ' ' || content || ' ' || COALESCE(urls, '') || ' ' || COALESCE(options, '') || ' ' || COALESCE(final_files, '')) LIKE ?")
+		conditions = append(conditions, "LOWER(id || ' ' || gid || ' ' || task_name || ' ' || type || ' ' || destination_id || ' ' || target_path || ' ' || error || ' ' || COALESCE(urls, '') || ' ' || COALESCE(final_files, '')) LIKE ?")
 		args = append(args, "%"+strings.ToLower(search)+"%")
 	}
 	if len(conditions) > 0 {
