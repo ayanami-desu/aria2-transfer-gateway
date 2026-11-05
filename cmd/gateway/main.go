@@ -16,6 +16,7 @@ import (
 	"aria2-transfer-gateway/internal/httpapi"
 	"aria2-transfer-gateway/internal/provider"
 	"aria2-transfer-gateway/internal/store"
+	"aria2-transfer-gateway/internal/tracker"
 	"aria2-transfer-gateway/internal/transfer"
 )
 
@@ -40,8 +41,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer taskStore.Close()
-	downloader := aria2.NewClient(runtime.Config.Aria2.Endpoint, runtime.Aria2Secret, nil)
-	configureAria2Hooks(downloader, runtime.Config.Aria2)
+	base := aria2.NewClient(runtime.Config.Aria2.Endpoint, runtime.Aria2Secret, nil)
+	configureAria2Hooks(base, runtime.Config.Aria2)
+	var downloader aria2.Downloader = base
+	var source *tracker.Source
+	if runtime.Config.Trackers.Enabled {
+		source = tracker.NewSource(runtime.Config.Trackers.URL, nil)
+		downloader = tracker.NewDownloader(base, source)
+	}
 	providers := map[string]provider.Provider{
 		"rclone":   provider.NewRclone(""),
 		"openlist": provider.NewOpenList(nil),
@@ -61,6 +68,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if source != nil {
+		go tracker.NewUpdater(source, base, runtime.TrackerInterval, log.Default()).Run(ctx)
+	}
 	if err := service.Start(ctx); err != nil {
 		log.Fatal(err)
 	}

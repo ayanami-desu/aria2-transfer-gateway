@@ -10,3 +10,8 @@ api:
 aria2:
   endpoint: http://127.0.0.1:6800/jsonrpc
   aria_rpc_secret: ARIA2_RPC_SECRET
+
+trackers:
+  enabled: true
+  url: https://cf.trackerslist.com/best.txt
+  interval: 24h

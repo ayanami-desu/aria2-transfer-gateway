@@ -2,19 +2,28 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	ListenAddr  string      `yaml:"listen_addr"`
-	DataFile    string      `yaml:"data_file"`
-	DownloadDir string      `yaml:"download_dir"`
-	WorkerCount int         `yaml:"worker_count"`
-	CORSOrigins []string    `yaml:"cors_origins"`
-	API         APIConfig   `yaml:"api"`
-	Aria2       Aria2Config `yaml:"aria2"`
+	ListenAddr  string         `yaml:"listen_addr"`
+	DataFile    string         `yaml:"data_file"`
+	DownloadDir string         `yaml:"download_dir"`
+	WorkerCount int            `yaml:"worker_count"`
+	CORSOrigins []string       `yaml:"cors_origins"`
+	API         APIConfig      `yaml:"api"`
+	Aria2       Aria2Config    `yaml:"aria2"`
+	Trackers    TrackersConfig `yaml:"trackers"`
+}
+
+type TrackersConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	URL      string `yaml:"url"`
+	Interval string `yaml:"interval"`
 }
 
 type APIConfig struct {
@@ -31,9 +40,10 @@ type Aria2Config struct {
 }
 
 type Runtime struct {
-	Config      Config
-	APIToken    string
-	Aria2Secret string
+	Config          Config
+	APIToken        string
+	Aria2Secret     string
+	TrackerInterval time.Duration
 }
 
 func Default() Config {
@@ -50,6 +60,7 @@ func Default() Config {
 			Endpoint:      "http://127.0.0.1:6800/jsonrpc",
 			AriaRPCSecret: "ARIA2_RPC_SECRET",
 		},
+		Trackers: TrackersConfig{Interval: "24h"},
 	}
 }
 
@@ -94,9 +105,29 @@ func (c *Config) applyDefaults() {
 	if c.Aria2.AriaRPCSecret == "" && c.Aria2.Secret == "" {
 		c.Aria2.AriaRPCSecret = defaults.Aria2.AriaRPCSecret
 	}
+	if c.Trackers.Interval == "" {
+		c.Trackers.Interval = defaults.Trackers.Interval
+	}
 }
 
 func (c Config) Resolve() (Runtime, error) {
+	interval := 24 * time.Hour
+	if c.Trackers.Interval != "" {
+		parsed, err := time.ParseDuration(c.Trackers.Interval)
+		if err != nil {
+			return Runtime{}, fmt.Errorf("invalid trackers.interval: %w", err)
+		}
+		if parsed <= 0 {
+			return Runtime{}, fmt.Errorf("trackers.interval must be positive")
+		}
+		interval = parsed
+	}
+	if c.Trackers.Enabled {
+		parsed, err := url.Parse(c.Trackers.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return Runtime{}, fmt.Errorf("trackers.url must be a valid http or https URL with a host")
+		}
+	}
 	apiToken := c.API.Token
 	if apiToken == "" && c.API.GatewaySecret != "" {
 		apiToken = os.Getenv(c.API.GatewaySecret)
@@ -106,8 +137,9 @@ func (c Config) Resolve() (Runtime, error) {
 		aria2Secret = os.Getenv(c.Aria2.AriaRPCSecret)
 	}
 	return Runtime{
-		Config:      c,
-		APIToken:    apiToken,
-		Aria2Secret: aria2Secret,
+		Config:          c,
+		APIToken:        apiToken,
+		Aria2Secret:     aria2Secret,
+		TrackerInterval: interval,
 	}, nil
 }
