@@ -3,7 +3,8 @@ services:
     build:
       context: .
       dockerfile: deploy/aria2-next.Dockerfile
-    image: aria2-next:3.0.9
+      pull: true
+    image: aria2-next:latest
     pull_policy: never
     container_name: aria2-transfer-aria2
     restart: unless-stopped

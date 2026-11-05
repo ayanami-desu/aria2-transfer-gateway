@@ -1,4 +1,4 @@
-FROM ghcr.io/aninsomniacy/aria2-next:v3.0.9
+FROM ghcr.io/aninsomniacy/aria2-next:latest
 
 USER root
 RUN apt-get update \
