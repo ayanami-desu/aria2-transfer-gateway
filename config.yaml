@@ -15,3 +15,8 @@ trackers:
   enabled: true
   url: https://cf.trackerslist.com/best.txt
   interval: 24h
+
+ed2k:
+  enabled: true
+  url: http://upd.emule-security.org/server.met
+  interval: 24h

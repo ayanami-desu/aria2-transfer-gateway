@@ -18,9 +18,16 @@ type Config struct {
 	API         APIConfig      `yaml:"api"`
 	Aria2       Aria2Config    `yaml:"aria2"`
 	Trackers    TrackersConfig `yaml:"trackers"`
+	ED2K        ED2KConfig     `yaml:"ed2k"`
 }
 
 type TrackersConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	URL      string `yaml:"url"`
+	Interval string `yaml:"interval"`
+}
+
+type ED2KConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	URL      string `yaml:"url"`
 	Interval string `yaml:"interval"`
@@ -44,6 +51,7 @@ type Runtime struct {
 	APIToken        string
 	Aria2Secret     string
 	TrackerInterval time.Duration
+	ED2KInterval    time.Duration
 }
 
 func Default() Config {
@@ -61,6 +69,10 @@ func Default() Config {
 			AriaRPCSecret: "ARIA2_RPC_SECRET",
 		},
 		Trackers: TrackersConfig{Interval: "24h"},
+		ED2K: ED2KConfig{
+			URL:      "http://upd.emule-security.org/server.met",
+			Interval: "24h",
+		},
 	}
 }
 
@@ -108,6 +120,12 @@ func (c *Config) applyDefaults() {
 	if c.Trackers.Interval == "" {
 		c.Trackers.Interval = defaults.Trackers.Interval
 	}
+	if c.ED2K.URL == "" {
+		c.ED2K.URL = defaults.ED2K.URL
+	}
+	if c.ED2K.Interval == "" {
+		c.ED2K.Interval = defaults.ED2K.Interval
+	}
 }
 
 func (c Config) Resolve() (Runtime, error) {
@@ -128,6 +146,23 @@ func (c Config) Resolve() (Runtime, error) {
 			return Runtime{}, fmt.Errorf("trackers.url must be a valid http or https URL with a host")
 		}
 	}
+	ed2kInterval := 24 * time.Hour
+	if c.ED2K.Interval != "" {
+		parsed, err := time.ParseDuration(c.ED2K.Interval)
+		if err != nil {
+			return Runtime{}, fmt.Errorf("invalid ed2k.interval: %w", err)
+		}
+		if parsed <= 0 {
+			return Runtime{}, fmt.Errorf("ed2k.interval must be positive")
+		}
+		ed2kInterval = parsed
+	}
+	if c.ED2K.Enabled {
+		parsed, err := url.Parse(c.ED2K.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return Runtime{}, fmt.Errorf("ed2k.url must be a valid http or https URL with a host")
+		}
+	}
 	apiToken := c.API.Token
 	if apiToken == "" && c.API.GatewaySecret != "" {
 		apiToken = os.Getenv(c.API.GatewaySecret)
@@ -141,5 +176,6 @@ func (c Config) Resolve() (Runtime, error) {
 		APIToken:        apiToken,
 		Aria2Secret:     aria2Secret,
 		TrackerInterval: interval,
+		ED2KInterval:    ed2kInterval,
 	}, nil
 }

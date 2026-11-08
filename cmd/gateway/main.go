@@ -13,6 +13,7 @@ import (
 
 	"aria2-transfer-gateway/internal/aria2"
 	"aria2-transfer-gateway/internal/config"
+	"aria2-transfer-gateway/internal/ed2k"
 	"aria2-transfer-gateway/internal/httpapi"
 	"aria2-transfer-gateway/internal/provider"
 	"aria2-transfer-gateway/internal/store"
@@ -49,6 +50,11 @@ func main() {
 		source = tracker.NewSource(runtime.Config.Trackers.URL, nil)
 		downloader = tracker.NewDownloader(base, source)
 	}
+	var ed2kSource *ed2k.Source
+	if runtime.Config.ED2K.Enabled {
+		ed2kSource = ed2k.NewSource(runtime.Config.ED2K.URL, nil)
+		downloader = ed2k.NewDownloader(downloader, ed2kSource)
+	}
 	providers := map[string]provider.Provider{
 		"rclone":   provider.NewRclone(""),
 		"openlist": provider.NewOpenList(nil),
@@ -70,6 +76,9 @@ func main() {
 	defer stop()
 	if source != nil {
 		go tracker.NewUpdater(source, base, runtime.TrackerInterval, log.Default()).Run(ctx)
+	}
+	if ed2kSource != nil {
+		go ed2k.NewUpdater(ed2kSource, base, runtime.ED2KInterval, log.Default()).Run(ctx)
 	}
 	if err := service.Start(ctx); err != nil {
 		log.Fatal(err)

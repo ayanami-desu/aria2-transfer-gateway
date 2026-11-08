@@ -60,6 +60,23 @@ func TestDefaultConfigFields(t *testing.T) {
 	if defaults.API.GatewaySecret != "GATEWAY_API_TOKEN" || defaults.Aria2.Endpoint != "http://127.0.0.1:6800/jsonrpc" || defaults.Aria2.AriaRPCSecret != "ARIA2_RPC_SECRET" {
 		t.Fatalf("default integrations = %#v", defaults)
 	}
+	if defaults.ED2K.URL != "http://upd.emule-security.org/server.met" || defaults.ED2K.Interval != "24h" {
+		t.Fatalf("default ed2k config = %#v", defaults.ED2K)
+	}
+}
+
+func TestResolveRejectsInvalidED2KSettings(t *testing.T) {
+	cfg := Default()
+	cfg.ED2K.Interval = "soon"
+	if _, err := cfg.Resolve(); err == nil {
+		t.Fatal("Resolve() accepted invalid ed2k interval")
+	}
+	cfg = Default()
+	cfg.ED2K.Enabled = true
+	cfg.ED2K.URL = "ftp://example.test/server.met"
+	if _, err := cfg.Resolve(); err == nil {
+		t.Fatal("Resolve() accepted non-HTTP ed2k URL")
+	}
 }
 
 func TestLoadMissingFileUsesCodeDefaults(t *testing.T) {
