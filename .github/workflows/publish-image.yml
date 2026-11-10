@@ -56,6 +56,7 @@ jobs:
           tar -czf gateway-runtime.tar.gz \
             docker-compose.yml \
             deploy/aria2-next.Dockerfile \
+            deploy/aria2-next.conf \
             hooks/aria2-complete.sh \
             hooks/aria2-init-hooks.sh \
             hooks/aria2-stopped.sh \

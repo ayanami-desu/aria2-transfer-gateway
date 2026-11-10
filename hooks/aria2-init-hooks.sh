@@ -1,24 +1,16 @@
 #!/bin/sh
 set -eu
 
+template=${ARIA2_CONF_TEMPLATE:-/etc/aria2/aria2-next.conf}
 config=${ARIA2_CONFIG_PATH:-/config/aria2-next.conf}
 
-set_value() {
-  option=$1
-  value=$2
-  if grep -q "^${option}=" "$config"; then
-    sed -i "s|^${option}=.*|${option}=${value}|" "$config"
-  else
-    printf '%s=%s\n' "$option" "$value" >> "$config"
+if [ ! -f "$config" ]; then
+  if [ ! -f "$template" ]; then
+    printf 'aria2 config template not found: %s\n' "$template" >&2
+    exit 1
   fi
-}
-
-touch "$config"
-
-set_value rpc-listen-all true
-set_value rpc-allow-origin-all true
-set_value on-download-complete /hooks/aria2-complete.sh
-set_value on-download-stop /hooks/aria2-stopped.sh
+  cp "$template" "$config"
+fi
 
 # When used as the container entrypoint, hand over to aria2-next.
 if [ "$#" -gt 0 ]; then

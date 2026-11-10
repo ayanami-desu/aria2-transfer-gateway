@@ -18,12 +18,14 @@ services:
       - "${ARIA2_CONFIG_DIR:-./runtime/aria2/config}:/config"
       - "${ARIA2_DOWNLOAD_DIR:-./runtime/aria2/downloads}:/downloads"
       - ./hooks:/hooks:ro
+      - ./deploy/aria2-next.conf:/etc/aria2/aria2-next.conf:ro
     entrypoint:
       - /bin/sh
       - /hooks/aria2-init-hooks.sh
     command:
       - --conf-path=/config/aria2-next.conf
       - --state-dir=/config/aria2-next-state
+      - --rpc-secret=${ARIA2_RPC_SECRET:?set ARIA2_RPC_SECRET}
 
   gateway:
     image: "${GATEWAY_IMAGE:-ghcr.io/ayanami-desu/aria2-transfer-gateway:latest}"
