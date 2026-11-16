@@ -134,8 +134,7 @@ type HookRequest struct {
 	Reason   string `json:"reason"`
 }
 type RetryTasksRequest struct {
-	IDs  []string `json:"ids"`
-	Mode string   `json:"mode"`
+	IDs []string `json:"ids"`
 }
 
 type RetryTaskFailure struct {
@@ -576,7 +575,7 @@ func (s *Server) handleRetryTasks(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[id] = struct{}{}
-		task, err := s.service.Retry(r.Context(), id, transfer.RetryMode(request.Mode))
+		task, err := s.service.Retry(id)
 		if err != nil {
 			response.Failed = append(response.Failed, RetryTaskFailure{ID: id, Error: err.Error()})
 			continue
@@ -701,7 +700,7 @@ func (s *Server) handleTaskPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost {
-		task, err := s.service.Retry(r.Context(), id, transfer.RetryMode(r.URL.Query().Get("mode")))
+		task, err := s.service.Retry(id)
 		if err != nil {
 			writeServiceError(w, err)
 			return

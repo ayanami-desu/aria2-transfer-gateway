@@ -38,13 +38,6 @@ type TaskInput struct {
 	Pause         bool
 }
 
-type RetryMode string
-
-const (
-	RetryModeUpload RetryMode = "upload"
-	RetryModeFull   RetryMode = "full"
-)
-
 var (
 	errFinalFilesNotReady = errors.New("aria2 final files are not ready")
 	errTaskDeleting       = errors.New("task is being deleted")
@@ -910,30 +903,12 @@ func (s *Service) HandleStopped(gid, reason string) error {
 	return err
 }
 
-func (s *Service) Retry(ctx context.Context, id string, mode RetryMode) (domain.Task, error) {
-	normalizedMode, err := normalizeRetryMode(mode)
-	if err != nil {
-		return domain.Task{}, err
-	}
+func (s *Service) Retry(id string) (domain.Task, error) {
 	task, err := s.store.Get(id)
 	if err != nil {
 		return domain.Task{}, err
 	}
-	if normalizedMode == RetryModeFull {
-		return s.retryFull(ctx, task)
-	}
 	return s.retryUpload(task)
-}
-
-func normalizeRetryMode(mode RetryMode) (RetryMode, error) {
-	mode = RetryMode(strings.ToLower(strings.TrimSpace(string(mode))))
-	if mode == "" {
-		return RetryModeUpload, nil
-	}
-	if mode != RetryModeUpload && mode != RetryModeFull {
-		return "", fmt.Errorf("unsupported retry mode %q", mode)
-	}
-	return mode, nil
 }
 
 func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
@@ -968,26 +943,6 @@ func (s *Service) retryUpload(task domain.Task) (domain.Task, error) {
 		return domain.Task{}, err
 	}
 	return updated, nil
-}
-
-func (s *Service) retryFull(ctx context.Context, task domain.Task) (domain.Task, error) {
-	if err := s.Delete(ctx, task.ID); err != nil {
-		return domain.Task{}, fmt.Errorf("full retry for task %q: %w", task.ID, err)
-	}
-	options := make(map[string]any, len(task.Options))
-	for key, value := range task.Options {
-		options[key] = value
-	}
-	return s.Create(ctx, TaskInput{
-		Type:          task.Type,
-		URLs:          task.URLs,
-		Content:       task.Content,
-		Options:       options,
-		DestinationID: task.DestinationID,
-		TargetPath:    task.TargetPath,
-		Cleanup:       task.Cleanup,
-		Pause:         task.Pause,
-	})
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {

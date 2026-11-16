@@ -366,7 +366,7 @@ func TestServiceRetriesAnyTaskStatus(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(task.DownloadPath, "file"), []byte("payload"), 0o640); err != nil {
 			t.Fatal(err)
 		}
-		updated, err := service.Retry(context.Background(), task.ID, RetryModeUpload)
+		updated, err := service.Retry(task.ID)
 		if err != nil {
 			t.Fatalf("retry %s: %v", status, err)
 		}
@@ -407,7 +407,7 @@ func TestServiceRejectsUploadRetryWithoutFinalFiles(t *testing.T) {
 	if err := os.MkdirAll(task.DownloadPath, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Retry(context.Background(), task.ID, RetryModeUpload); err == nil {
+	if _, err := service.Retry(task.ID); err == nil {
 		t.Fatal("upload retry succeeded without a final file snapshot")
 	}
 	current, err := service.Get(task.ID)
@@ -416,60 +416,6 @@ func TestServiceRejectsUploadRetryWithoutFinalFiles(t *testing.T) {
 	}
 	if current.Status != domain.StatusDownloading {
 		t.Fatalf("task status = %q, want downloading", current.Status)
-	}
-}
-
-func TestServiceFullRetryReplacesTask(t *testing.T) {
-	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer taskStore.Close()
-	downloadRoot := filepath.Join(t.TempDir(), "download")
-	removedGID := ""
-	downloader := fakeDownloader{remove: func(gid string) error {
-		removedGID = gid
-		return nil
-	}}
-	service, err := NewService(
-		taskStore,
-		downloader,
-		map[string]provider.Provider{},
-		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
-		"",
-		downloadRoot,
-		1,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, err := service.Create(context.Background(), TaskInput{
-		URLs:          []string{"https://example.test/file"},
-		DestinationID: "drive",
-		TargetPath:    "/movies",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldDownloadPath := original.DownloadPath
-	retried, err := service.Retry(context.Background(), original.ID, RetryModeFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if removedGID != original.GID {
-		t.Fatalf("removed GID = %q, want %q", removedGID, original.GID)
-	}
-	if retried.ID == original.ID || retried.Status != domain.StatusDownloading || retried.URLs[0] != original.URLs[0] {
-		t.Fatalf("replacement task = %#v", retried)
-	}
-	if _, err := taskStore.Get(original.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("old task lookup error = %v, want not found", err)
-	}
-	if _, err := os.Stat(oldDownloadPath); !os.IsNotExist(err) {
-		t.Fatalf("old download path still exists: %v", err)
-	}
-	if info, err := os.Stat(retried.DownloadPath); err != nil || !info.IsDir() {
-		t.Fatalf("new download path = %q, stat error = %v", retried.DownloadPath, err)
 	}
 }
 
@@ -586,7 +532,7 @@ func TestServiceUploadRetryRequiresDownloadDirectory(t *testing.T) {
 	if err := taskStore.Create(task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Retry(context.Background(), task.ID, RetryModeUpload); err == nil {
+	if _, err := service.Retry(task.ID); err == nil {
 		t.Fatal("upload retry succeeded without a download directory")
 	}
 	current, err := taskStore.Get(task.ID)
