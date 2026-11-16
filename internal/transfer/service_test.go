@@ -1,12 +1,14 @@
 package transfer
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1691,5 +1693,263 @@ func TestServiceCanClearDestinationToken(t *testing.T) {
 	}
 	if stored.Token != "" {
 		t.Fatalf("stored token = %q, want empty", stored.Token)
+	}
+}
+
+func TestServiceExtractsZipBeforeUpload(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	backend := &fakeProvider{done: make(chan struct{})}
+	downloader := &fakeDownloader{}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": backend},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetExtractArchives(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.Create(ctx, TaskInput{
+		URLs:          []string{"https://example.test/pack.zip"},
+		DestinationID: "drive",
+		TargetPath:    "/movies",
+		Cleanup:       false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(task.DownloadPath, "pack.zip")
+	writeZipFixture(t, archivePath, map[string]string{"pack/movie.txt": "payload"})
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	length := fmt.Sprintf("%d", info.Size())
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: archivePath, Length: length, CompletedLength: length, Selected: true}}
+	}
+	if err := service.HandleCompleted(ctx, task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backend.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer worker did not run")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := service.Get(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status == domain.StatusCompleted {
+			if len(current.FinalFiles) != 1 || current.FinalFiles[0] != "pack/movie.txt" {
+				t.Fatalf("final files = %#v, want [pack/movie.txt]", current.FinalFiles)
+			}
+			if _, err := os.Stat(filepath.Join(task.DownloadPath, "pack", "movie.txt")); err != nil {
+				t.Fatalf("extracted file stat error = %v", err)
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if len(backend.requests) != 1 {
+				t.Fatalf("transfer requests = %d, want 1", len(backend.requests))
+			}
+			if files := backend.requests[0].Files; len(files) != 1 || files[0] != "pack/movie.txt" {
+				t.Fatalf("uploaded files = %#v, want [pack/movie.txt]", files)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := service.Get(task.ID)
+	t.Fatalf("task status = %q, want completed", current.Status)
+}
+
+func TestServiceWrapsLooseZipFilesInTaskFolder(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	backend := &fakeProvider{done: make(chan struct{})}
+	downloader := &fakeDownloader{}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": backend},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetExtractArchives(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.Create(ctx, TaskInput{
+		URLs:          []string{"https://example.test/loose.zip"},
+		DestinationID: "drive",
+		TargetPath:    "/movies",
+		Cleanup:       false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(task.DownloadPath, "loose.zip")
+	writeZipFixture(t, archivePath, map[string]string{"movie.mkv": "payload"})
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	length := fmt.Sprintf("%d", info.Size())
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: archivePath, Length: length, CompletedLength: length, Selected: true}}
+	}
+	if err := service.HandleCompleted(ctx, task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backend.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer worker did not run")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := service.Get(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status == domain.StatusCompleted {
+			if len(current.FinalFiles) != 1 || current.FinalFiles[0] != "loose/movie.mkv" {
+				t.Fatalf("final files = %#v, want [loose/movie.mkv]", current.FinalFiles)
+			}
+			if _, err := os.Stat(filepath.Join(task.DownloadPath, "loose", "movie.mkv")); err != nil {
+				t.Fatalf("wrapped file stat error = %v", err)
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if len(backend.requests) != 1 {
+				t.Fatalf("transfer requests = %d, want 1", len(backend.requests))
+			}
+			if files := backend.requests[0].Files; len(files) != 1 || files[0] != "loose/movie.mkv" {
+				t.Fatalf("uploaded files = %#v, want [loose/movie.mkv]", files)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := service.Get(task.ID)
+	t.Fatalf("task status = %q, want completed", current.Status)
+}
+
+func TestServiceFailsTaskWhenZipExtractionFails(t *testing.T) {
+	taskStore, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	backend := &fakeProvider{}
+	downloader := &fakeDownloader{}
+	service, err := NewService(
+		taskStore,
+		downloader,
+		map[string]provider.Provider{"fake": backend},
+		[]domain.Destination{{ID: "drive", Name: "Drive", Provider: "fake"}},
+		"",
+		filepath.Join(t.TempDir(), "download"),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetExtractArchives(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.Create(ctx, TaskInput{
+		URLs:          []string{"https://example.test/broken.zip"},
+		DestinationID: "drive",
+		TargetPath:    "/movies",
+		Cleanup:       false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(task.DownloadPath, "broken.zip")
+	if err := os.WriteFile(archivePath, []byte("not a zip"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	length := fmt.Sprintf("%d", info.Size())
+	downloader.getFiles = func(string) []aria2.DownloadFile {
+		return []aria2.DownloadFile{{Path: archivePath, Length: length, CompletedLength: length, Selected: true}}
+	}
+	if err := service.HandleCompleted(ctx, task.GID, ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := service.Get(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status == domain.StatusFailed {
+			if !strings.Contains(current.Error, "zip") {
+				t.Fatalf("task error = %q, want zip error", current.Error)
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if len(backend.requests) != 0 {
+				t.Fatalf("transfer requests = %d, want 0", len(backend.requests))
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := service.Get(task.ID)
+	t.Fatalf("task status = %q, want failed", current.Status)
+}
+
+func writeZipFixture(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for name, content := range files {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

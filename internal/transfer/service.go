@@ -12,12 +12,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"aria2-transfer-gateway/internal/archive"
 	"aria2-transfer-gateway/internal/aria2"
 	"aria2-transfer-gateway/internal/domain"
 	"aria2-transfer-gateway/internal/provider"
@@ -165,6 +167,7 @@ type Service struct {
 	defaultDestinationID string
 	downloadRoot         string
 	workerCount          int
+	extractArchives      bool
 	taskRunsMu           sync.Mutex
 	taskRuns             map[string]*taskRun
 	jobsMu               sync.Mutex
@@ -221,6 +224,12 @@ func NewService(taskStore *store.Store, downloader aria2.Downloader, providers m
 	}
 	service.jobsCond = sync.NewCond(&service.jobsMu)
 	return service, nil
+}
+
+// SetExtractArchives controls whether zip archives among completed download
+// files are extracted before upload. Call it before Start.
+func (s *Service) SetExtractArchives(enabled bool) {
+	s.extractArchives = enabled
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -1367,6 +1376,31 @@ func (s *Service) runTransfer(ctx context.Context, id string) {
 			s.markFailed(id, err)
 		}
 		return
+	}
+	if s.extractArchives {
+		finalFiles, err := archive.ExtractZIPs(transferCtx, task.DownloadPath, task.FinalFiles, task.DisplayName())
+		if err != nil {
+			if !s.shouldStopTransfer(transferCtx, id) {
+				s.markFailed(id, err)
+			}
+			return
+		}
+		if !slices.Equal(finalFiles, task.FinalFiles) {
+			updated, err := s.store.Update(id, func(current *domain.Task) error {
+				if current.Status == domain.StatusDeleting {
+					return errTaskDeleting
+				}
+				current.FinalFiles = finalFiles
+				return nil
+			})
+			if err != nil {
+				if !s.shouldStopTransfer(transferCtx, id) {
+					s.markFailed(id, err)
+				}
+				return
+			}
+			task = updated
+		}
 	}
 	err = backend.Transfer(transferCtx, provider.TransferRequest{
 		SourceDir:   task.DownloadPath,

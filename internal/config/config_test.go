@@ -27,6 +27,8 @@ api:
 aria2:
   endpoint: http://aria2.test/jsonrpc
   aria_rpc_secret: TEST_ARIA2_RPC_SECRET
+archives:
+  extract_zip: false
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -41,6 +43,9 @@ aria2:
 	}
 	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "https://example.test" {
 		t.Fatalf("CORSOrigins = %#v", cfg.CORSOrigins)
+	}
+	if cfg.Archives.ExtractZip {
+		t.Fatalf("Archives = %#v, want extract_zip disabled", cfg.Archives)
 	}
 
 	runtime, err := cfg.Resolve()
@@ -62,6 +67,9 @@ func TestDefaultConfigFields(t *testing.T) {
 	}
 	if defaults.ED2K.URL != "http://upd.emule-security.org/server.met" || defaults.ED2K.Interval != "24h" {
 		t.Fatalf("default ed2k config = %#v", defaults.ED2K)
+	}
+	if !defaults.Archives.ExtractZip {
+		t.Fatalf("default archive config = %#v, want extract_zip enabled", defaults.Archives)
 	}
 }
 

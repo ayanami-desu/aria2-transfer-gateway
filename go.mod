@@ -3,6 +3,7 @@ module aria2-transfer-gateway
 go 1.22
 
 require (
+	golang.org/x/text v0.21.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.34.5
 )

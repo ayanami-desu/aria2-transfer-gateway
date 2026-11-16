@@ -19,6 +19,11 @@ type Config struct {
 	Aria2       Aria2Config    `yaml:"aria2"`
 	Trackers    TrackersConfig `yaml:"trackers"`
 	ED2K        ED2KConfig     `yaml:"ed2k"`
+	Archives    ArchivesConfig `yaml:"archives"`
+}
+
+type ArchivesConfig struct {
+	ExtractZip bool `yaml:"extract_zip"`
 }
 
 type TrackersConfig struct {
@@ -73,6 +78,7 @@ func Default() Config {
 			URL:      "http://upd.emule-security.org/server.met",
 			Interval: "24h",
 		},
+		Archives: ArchivesConfig{ExtractZip: true},
 	}
 }
 

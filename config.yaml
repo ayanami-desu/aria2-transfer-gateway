@@ -2,6 +2,9 @@ listen_addr: 0.0.0.0:8787
 data_file: /data/tasks.db
 download_dir: /downloads
 worker_count: 2
+archives:
+  # 下载完成后解压 zip；单文件夹原样上传，否则包进任务名文件夹后上传。解压失败会让任务失败，可重试。
+  extract_zip: true
 cors_origins:
   - http://127.0.0.1:6880
   - http://localhost:6880

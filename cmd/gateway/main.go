@@ -71,6 +71,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	service.SetExtractArchives(runtime.Config.Archives.ExtractZip)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
